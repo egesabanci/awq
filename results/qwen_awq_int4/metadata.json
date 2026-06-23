@@ -1,10 +1,10 @@
 {
   "model": "Qwen3.5-2B-FP16",
   "method": "AWQ + INT4 group-wise",
-  "group_size": 128,
+  "group_size": 32,
   "alpha": 0.5,
-  "layers_quantized": 186,
-  "fp16_mb": 2745.4,
-  "int4_mb": 686.4,
+  "layers_quantized": 78,
+  "fp16_mb": 1333.8,
+  "int4_mb": 333.4,
   "compression_ratio": 4.0
 }
