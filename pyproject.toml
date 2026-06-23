@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=75.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awq-qwen-toolcall"
+version = "0.1.0"
+description = "AWQ quantization experiment on Qwen3.5-2B for tool-calling tasks"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Ege Sabanci" },
+]
+
+requires-python = ">=3.11"
+dependencies = [
+    "torch>=2.4.0",
+    "transformers>=4.43.0",
+    "datasets>=3.0.0",
+    "safetensors>=0.4.0",
+    "accelerate>=1.0.0",
+    "scikit-learn>=1.5.0",
+    "numpy>=1.26.0",
+    "tqdm>=4.66.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black>=24.0",
+    "ruff>=0.5.0",
+]
