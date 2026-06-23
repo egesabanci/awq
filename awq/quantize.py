@@ -95,7 +95,7 @@ def load_weight_from_safetensors(sf_path: str, tensor_name: str) -> torch.Tensor
 def quantize_layer_cpu(
     weight: torch.Tensor,
     scale_factors: torch.Tensor,
-    group_size: int = 128,
+    group_size: int = 32,
 ) -> dict:
     """Quantize a single linear layer on CPU.
 
@@ -146,7 +146,7 @@ def quantize_layer_cpu(
 def quantize_all_layers_memory_safe(
     model_path: str,
     scales: dict[str, torch.Tensor],
-    group_size: int = 128,
+    group_size: int = 32,
     output_dir: str | None = None,
     verbose: bool = True,
 ) -> dict[str, dict]:
@@ -183,8 +183,24 @@ def quantize_all_layers_memory_safe(
         key = key.replace("model.language_model.", "model.")
         return key
 
+    # Explicitly skip layers: lm_head, tiny projections, and even-numbered layers
+    SKIP_LAYERS = {"lm_head", "model.lm_head", "model.model.lm_head"}
+    # Tiny projections (d_out=16)
+    for i in range(0, 24, 2):  # only even layers that also have linear_attn
+        for name in ("in_proj_a", "in_proj_b"):
+            SKIP_LAYERS.add(f"model.layers.{i}.linear_attn.{name}")
+    # Even-numbered layers → keep in FP16 to prevent error compounding
+    for i in range(0, 24, 2):  # 0, 2, 4, ..., 22
+        for key in list(scales.keys()):
+            if f"model.layers.{i}." in key:
+                SKIP_LAYERS.add(key)
+
     for tensor_name, sf_path in iter_weights(model_path):
         calib_key = normalize_safetensors_name(tensor_name)
+        if calib_key in SKIP_LAYERS:
+            if verbose:
+                print(f"  [SKIP] {tensor_name}")
+            continue
         if calib_key not in scales:
             if verbose:
                 print(f"  [SKIP] {tensor_name} → {calib_key} — no scale found")
@@ -336,7 +352,7 @@ if __name__ == "__main__":
     quantized = quantize_all_layers_memory_safe(
         MODEL_PATH,
         scales,
-        group_size=128,
+        group_size=32,
         verbose=True,
     )
 

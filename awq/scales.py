@@ -54,19 +54,17 @@ def compute_awq_scale(
     weight = weight.float()
     channel_importance = channel_importance.float()
 
-    # Per-channel mean absolute weight
-    per_channel_mean = weight.abs().mean(dim=0)  # [d_in]
-
-    # Global mean across all channels
-    global_mean = per_channel_mean.mean()
-
-    # AWQ scale formula: s_c = (mean(|W[:,c]|) / mean(|W|))^alpha
-    # Simplified: s = (per_channel_mean^alpha) / (global_mean^alpha)
-    # This gives s > 1 for channels with larger-than-average weights
-    if global_mean > 0:
-        s = (per_channel_mean ** alpha) / (global_mean ** alpha)
+    # AWQ scale formula: s = (channel_importance^alpha) / (channel_importance.mean()^alpha)
+    # The channel_importance is |X|.mean(0) from the calibration pass,
+    # representing activation magnitude per input channel.
+    # Channels with higher activation magnitudes get scaled UP (s > 1)
+    # to preserve their precision during quantization.
+    # This is the core insight of the AWQ paper: activation magnitudes
+    # reveal which weight channels are most important.
+    if channel_importance.mean() > 0:
+        s = (channel_importance ** alpha) / (channel_importance.mean() ** alpha)
     else:
-        s = torch.ones_like(per_channel_mean)
+        s = torch.ones_like(channel_importance)
 
     # Clamp for numerical stability
     s = s.clamp(clamp_min, clamp_max)
@@ -104,6 +102,42 @@ def compute_all_scales(
         if isinstance(module, torch.nn.Linear):
             named_weights[name] = module.weight.data
 
+    # Skip these layers — too sensitive for INT4 quantization
+    SKIP_LAYERS = {
+        "lm_head", "model.lm_head", "model.model.lm_head",
+        # Tiny projection layers (d_out < 64) — INT4 has no benefit
+        "model.layers.0.linear_attn.in_proj_a", "model.layers.0.linear_attn.in_proj_b",
+        "model.layers.1.linear_attn.in_proj_a", "model.layers.1.linear_attn.in_proj_b",
+        "model.layers.2.linear_attn.in_proj_a", "model.layers.2.linear_attn.in_proj_b",
+        "model.layers.4.linear_attn.in_proj_a", "model.layers.4.linear_attn.in_proj_b",
+        "model.layers.5.linear_attn.in_proj_a", "model.layers.5.linear_attn.in_proj_b",
+        "model.layers.6.linear_attn.in_proj_a", "model.layers.6.linear_attn.in_proj_b",
+        "model.layers.8.linear_attn.in_proj_a", "model.layers.8.linear_attn.in_proj_b",
+        "model.layers.9.linear_attn.in_proj_a", "model.layers.9.linear_attn.in_proj_b",
+        "model.layers.10.linear_attn.in_proj_a", "model.layers.10.linear_attn.in_proj_b",
+        "model.layers.12.linear_attn.in_proj_a", "model.layers.12.linear_attn.in_proj_b",
+        "model.layers.13.linear_attn.in_proj_a", "model.layers.13.linear_attn.in_proj_b",
+        "model.layers.14.linear_attn.in_proj_a", "model.layers.14.linear_attn.in_proj_b",
+        "model.layers.16.linear_attn.in_proj_a", "model.layers.16.linear_attn.in_proj_b",
+        "model.layers.17.linear_attn.in_proj_a", "model.layers.17.linear_attn.in_proj_b",
+        "model.layers.18.linear_attn.in_proj_a", "model.layers.18.linear_attn.in_proj_b",
+        "model.layers.20.linear_attn.in_proj_a", "model.layers.20.linear_attn.in_proj_b",
+        "model.layers.21.linear_attn.in_proj_a", "model.layers.21.linear_attn.in_proj_b",
+        "model.layers.22.linear_attn.in_proj_a", "model.layers.22.linear_attn.in_proj_b",
+    }
+
+    # Keep every OTHER layer in FP16 to prevent error compounding
+    # Quantize only: layers 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23 (odd layers)
+    QUANTIZE_LAYERS = set(range(1, 24, 2))  # odd-numbered layers
+    TOTAL_LAYERS = 24
+
+    for i in range(TOTAL_LAYERS):
+        if i not in QUANTIZE_LAYERS:
+            # Keep even-numbered layers in FP16
+            for name in list(calibration_stats.keys()):
+                if f"model.layers.{i}." in name:
+                    SKIP_LAYERS.add(name)
+
     scales: dict[str, torch.Tensor] = {}
     stats = {
         "total_layers": 0,
@@ -112,6 +146,17 @@ def compute_all_scales(
     }
 
     for layer_name in sorted(calibration_stats.keys()):
+        if layer_name in SKIP_LAYERS:
+            reason = "excluded from INT4"
+            if "lm_head" in layer_name:
+                reason = "lm_head too sensitive"
+            elif "in_proj_a" in layer_name or "in_proj_b" in layer_name:
+                reason = "tiny projection (16×2048)"
+            elif any(f"model.layers.{i}." in layer_name for i in range(24) if i not in QUANTIZE_LAYERS):
+                reason = f"kept in FP16 (even layer)"
+            if verbose:
+                print(f"  [SKIP] {layer_name} — {reason}")
+            continue
         if layer_name not in named_weights:
             if verbose:
                 print(f"  [SKIP] {layer_name} — no weight found")
