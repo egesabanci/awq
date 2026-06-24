@@ -24,6 +24,7 @@ Thumbs.db
 
 # Data
 data/raw/
+data/processed/
 *.lock
 
 # Results (generated artifacts)

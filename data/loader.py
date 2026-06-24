@@ -110,6 +110,12 @@ def save_splits(
 ) -> str:
     """Save calibration and evaluation splits as JSON files.
 
+    Args:
+        calibration: Calibration samples.
+        evaluation: Evaluation samples.
+        output_dir: Output directory. Defaults to DATA_DIR / "processed".
+            Can be overridden (e.g. by CLI to write under output-dir).
+
     Returns the output directory path.
     """
     if output_dir is None:
@@ -130,11 +136,27 @@ def save_splits(
 
 
 def load_splits(data_dir: str | None = None) -> tuple[list[dict], list[dict]]:
-    """Load previously saved splits from disk."""
+    """Load previously saved splits from disk.
+
+    Args:
+        data_dir: Directory with calibration.json and evaluation.json.
+            Defaults to DATA_DIR / "processed".
+
+    Returns:
+        (calibration_samples, eval_samples)
+    """
     if data_dir is None:
         data_dir = os.path.join(DATA_DIR, "processed")
     calib_path = os.path.join(data_dir, "calibration.json")
     eval_path = os.path.join(data_dir, "evaluation.json")
+
+    # Auto-generate if files don't exist
+    if not os.path.exists(calib_path) or not os.path.exists(eval_path):
+        print(f"Processed splits not found at {data_dir}. Running load_toolace_splits to generate...")
+        calib_samples, eval_samples = load_toolace_splits(
+            calibration_size=200, eval_size=100, seed=42
+        )
+        save_splits(calib_samples, eval_samples, output_dir=data_dir)
 
     with open(calib_path) as f:
         calibration = json.load(f)
