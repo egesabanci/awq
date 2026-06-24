@@ -1,11 +1,11 @@
 [build-system]
-requires = ["setuptools>=75.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
-name = "awq-qwen-toolcall"
-version = "0.1.0"
-description = "AWQ quantization experiment on Qwen3.5-2B for tool-calling tasks"
+name = "awq-qwen-experiment"
+version = "0.2.0"
+description = "AWQ quantization experimentation pipeline"
 readme = "README.md"
 license = { text = "MIT" }
 authors = [
@@ -24,8 +24,19 @@ dependencies = [
     "tqdm>=4.66.0",
 ]
 
-[project.optional-dependencies]
+[project.urls]
+Repository = "https://github.com/egesabanci/awq-qwen-experiment"
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "awq",
+    "data",
+    "eval",
+    "utils",
+]
+
+[dependency-groups]
 dev = [
-    "black>=24.0",
+    "pytest>=9.0.0",
     "ruff>=0.5.0",
 ]

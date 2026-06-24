@@ -1,4 +1,4 @@
-"""FP16 baseline inference runner for Qwen3.5-2B on Apple Silicon MPS."""
+"""FP16 baseline inference runner for Qwen3.5 models."""
 
 import json
 import os
@@ -10,7 +10,44 @@ import numpy as np
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-RESULTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "results")
+from utils.memory import get_device, log_memory, empty_cache
+from utils.errors import retry_with_backoff
+
+
+@retry_with_backoff(max_retries=3)
+def load_fp16_model(
+    model_path: str,
+    device: str | None = None,
+) -> tuple[AutoModelForCausalLM, AutoTokenizer]:
+    """Load model in FP16 on the specified device.
+
+    Args:
+        model_path: Path to local model directory or HuggingFace repo ID.
+        device: Torch device string. Auto-detected if None.
+
+    Returns:
+        (model, tokenizer)
+    """
+    if device is None:
+        device = get_device()
+
+    print(f"Loading model from {model_path}...")
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        torch_dtype=torch.float16,
+        device_map=device,
+        trust_remote_code=False,
+    )
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=False)
+
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+
+    model.eval()
+    print(f"  Model loaded: {sum(p.numel() for p in model.parameters())/1e9:.2f}B params")
+    print(f"  Device: {next(model.parameters()).device}")
+    print(f"  Dtype: {next(model.parameters()).dtype}")
+    return model, tokenizer
 
 
 @torch.no_grad()
@@ -20,20 +57,20 @@ def generate_text(
     prompt: str,
     max_new_tokens: int = 512,
     temperature: float = 0.0,
-    device: str = "mps",
+    device: str | None = None,
 ) -> tuple[str, float]:
     """Generate a single response from a prompt.
 
     Returns:
         (generated_text, tokens_per_second)
     """
+    if device is None:
+        device = get_device()
+
     inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=4096).to(device)
     input_len = inputs["input_ids"].size(1)
 
-    if temperature == 0.0:
-        do_sample = False
-    else:
-        do_sample = True
+    do_sample = temperature > 0.0
 
     t0 = time.perf_counter()
     outputs = model.generate(
@@ -55,37 +92,13 @@ def generate_text(
     return generated.strip(), tokens_per_sec
 
 
-def load_fp16_model(
-    model_path: str,
-    device: str = "mps",
-) -> tuple[AutoModelForCausalLM, AutoTokenizer]:
-    """Load Qwen3.5-2B in FP16 on the specified device."""
-    print(f"Loading model from {model_path}...")
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        torch_dtype=torch.float16,
-        device_map=device,
-        trust_remote_code=False,
-    )
-    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=False)
-
-    if tokenizer.pad_token_id is None:
-        tokenizer.pad_token_id = tokenizer.eos_token_id
-
-    model.eval()
-    print(f"  Model loaded: {sum(p.numel() for p in model.parameters())/1e9:.2f}B params")
-    print(f"  Device: {next(model.parameters()).device}")
-    print(f"  Dtype: {next(model.parameters()).dtype}")
-    return model, tokenizer
-
-
 def run_fp16_baseline(
     model_path: str,
     prompts: list[str],
     expected: list[dict] | None = None,
     output_path: str | None = None,
     max_new_tokens: int = 512,
-    device: str = "mps",
+    device: str | None = None,
     progress_callback: Callable | None = None,
 ) -> dict:
     """Run FP16 inference on all prompts and save outputs.
@@ -94,18 +107,21 @@ def run_fp16_baseline(
         model_path: Path to local model directory.
         prompts: List of formatted prompt strings.
         expected: Optional list of expected tool calls (for eval).
-        output_path: Where to save results JSON.
+        output_path: Where to save results JSON. If None, not saved.
         max_new_tokens: Max tokens per generation.
-        device: Torch device string.
+        device: Torch device string. Auto-detected if None.
         progress_callback: Optional fn(i, total) for status updates.
 
     Returns:
         Benchmark result dict with outputs, timing, and memory stats.
     """
+    if device is None:
+        device = get_device()
+
     model, tokenizer = load_fp16_model(model_path, device)
 
     # Record baseline memory
-    torch.mps.empty_cache()
+    empty_cache()
     peak_mem_before = _get_current_memory(device)
 
     outputs: list[str] = []
@@ -131,7 +147,6 @@ def run_fp16_baseline(
     peak_mem_after = _get_current_memory(device)
     current_mem = _get_current_memory(device)
 
-    # Build result
     result = {
         "model": model_path,
         "device": device,
@@ -150,66 +165,29 @@ def run_fp16_baseline(
         "memory": {
             "peak_allocated_gb": round(peak_mem_after, 2),
             "current_allocated_gb": round(current_mem, 2),
-            "savings_vs_model_size_gb": None,  # Will be filled by AWQ comparison
         },
     }
 
-    if output_path is None:
-        output_path = os.path.join(RESULTS_DIR, "fp16_outputs.json")
-
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    with open(output_path, "w") as f:
-        json.dump(result, f, indent=2, default=str)
-
-    print(f"\nSaved FP16 results → {output_path}")
+    if output_path is not None:
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        with open(output_path, "w") as f:
+            json.dump(result, f, indent=2, default=str)
+        print(f"\nSaved FP16 results → {output_path}")
 
     # Cleanup
     del model
-    if device == "mps":
-        torch.mps.empty_cache()
+    empty_cache()
 
     return result
 
 
-# ── Memory helpers ────────────────────────────────────────────────────
-
 def _get_current_memory(device: str) -> float:
     """Get current memory allocation in GB."""
-    if device == "mps":
-        return torch.mps.current_allocated_memory() / 1e9
-    elif device == "cuda":
+    if device == "cuda":
         return torch.cuda.memory_allocated() / 1e9
+    elif device == "mps":
+        try:
+            return torch.mps.current_allocated_memory() / 1e9
+        except Exception:
+            return 0.0
     return 0.0
-
-
-# ── CLI entry point ───────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="FP16 baseline inference")
-    parser.add_argument("--model-path", default="models/Qwen3.5-2B-FP16", help="Path to FP16 model")
-    parser.add_argument("--prompts-path", default="data/processed/evaluation.json", help="Path to eval prompts JSON")
-    parser.add_argument("--output-path", default=None, help="Where to save results")
-    parser.add_argument("--max-new-tokens", type=int, default=512)
-    parser.add_argument("--device", default="mps")
-    args = parser.parse_args()
-
-    from data.loader import load_splits, format_prompt
-
-    _, eval_samples = load_splits(data_dir=os.path.dirname(args.prompts_path))
-    prompts = [format_prompt(s) for s in eval_samples]
-    expected = [{"name": "test", "arguments": {}} for _ in eval_samples]  # placeholder
-
-    results = run_fp16_baseline(
-        model_path=args.model_path,
-        prompts=prompts,
-        expected=expected,
-        output_path=args.output_path,
-        max_new_tokens=args.max_new_tokens,
-        device=args.device,
-        progress_callback=lambda i, n: print(f"  [{i}/{n}]", end="\r" if i < n else "\n"),
-    )
-
-    print(f"\nMean throughput: {results['timing']['mean_tokens_per_sec']:.1f} tok/s")
-    print(f"Peak memory:     {results['memory']['peak_allocated_gb']:.2f} GB")

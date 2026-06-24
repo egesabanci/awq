@@ -1,4 +1,4 @@
-"""AWQ INT4 quantization — memory-safe version (Issue #8).
+"""AWQ INT4 quantization — memory-safe version.
 
 Reads weights directly from safetensors files on disk, one tensor at a time,
 instead of loading the full model into GPU memory. Process is:
@@ -20,12 +20,11 @@ from typing import Any
 import numpy as np
 import torch
 
-from utils.memory import log_memory
+from utils.memory import log_memory, get_device
+from utils.errors import QuantizationError
 
-RESULTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "results")
 
-
-def find_safetensors_file(model_path: str) -> list[str]:
+def find_safetensors_files(model_path: str) -> list[str]:
     """Find all .safetensors files in a model directory, ordered by shard index."""
     import glob
 
@@ -46,40 +45,27 @@ def load_index_file(model_path: str) -> dict:
 
 
 def iter_weights(model_path: str):
-    """Yield (tensor_name, numpy_array) for all linear weight tensors.
+    """Yield (tensor_name, safetensors_file_path) for all weight tensors.
 
-    Uses safetensors to read one tensor at a time from disk.
     Only yields tensors belonging to nn.Linear modules (excludes
     embeddings, norms, and other non-linear parameters).
     """
     import safetensors
 
-    safetensors_files = find_safetensors_file(model_path)
+    safetensors_files = find_safetensors_files(model_path)
     weight_map = load_index_file(model_path)
 
-    # Determine which tensor names to look for — only linear layer weights
     for sf_path in safetensors_files:
-        # Use safetensors to get the list of tensors in this file
         with safetensors.safe_open(sf_path, framework="pt") as f:
             tensor_names = f.keys()
 
         for name in tensor_names:
-            # Skip non-weight tensors (embeddings, norms, biases, etc.)
-            # We only want Linear layer weights (have "weight" suffix and are in a linear-like path)
             if not name.endswith(".weight"):
                 continue
-            # Skip embedding layers (model.embed_tokens)
             if "embed" in name:
                 continue
-            # Skip norm layers (they don't have weights)
             if "norm" in name or "layernorm" in name or "rmsnorm" in name:
                 continue
-            # Skip lm_head (we keep it as-is in our AWQ wrapper)
-            # Actually include it for now
-            if name == "lm_head.weight":
-                # Include lm_head — it's a linear layer
-                pass
-
             yield name, sf_path
 
 
@@ -92,6 +78,19 @@ def load_weight_from_safetensors(sf_path: str, tensor_name: str) -> torch.Tensor
     return tensor
 
 
+def normalize_safetensors_name(name: str) -> str:
+    """Convert safetensors weight name to calibration stat key.
+
+    Example: model.language_model.layers.0.mlp.gate_proj.weight
+          → model.layers.0.mlp.gate_proj
+    """
+    key = name.replace(".weight", "")
+    key = key.replace("model.language_model.", "model.")
+    # Also handle model.model.* pattern
+    key = key.replace("model.model.", "model.")
+    return key
+
+
 def quantize_layer_cpu(
     weight: torch.Tensor,
     scale_factors: torch.Tensor,
@@ -99,7 +98,13 @@ def quantize_layer_cpu(
 ) -> dict:
     """Quantize a single linear layer on CPU.
 
-    Same logic as quantize.py but designed to work with CPU tensors.
+    Args:
+        weight: Weight matrix, shape [d_out, d_in].
+        scale_factors: AWQ per-channel scale factors, shape [d_in].
+        group_size: INT4 group size.
+
+    Returns:
+        Quantized layer dict with packed weights, group scales, etc.
     """
     d_out, d_in = weight.shape
 
@@ -143,12 +148,13 @@ def quantize_layer_cpu(
     }
 
 
-def quantize_all_layers_memory_safe(
+def quantize_all_layers(
     model_path: str,
     scales: dict[str, torch.Tensor],
     group_size: int = 32,
     output_dir: str | None = None,
     verbose: bool = True,
+    device: str = "cpu",
 ) -> dict[str, dict]:
     """Quantize all linear layers reading weights directly from safetensors.
 
@@ -156,13 +162,15 @@ def quantize_all_layers_memory_safe(
 
     Args:
         model_path: Path to the FP16 model directory.
-        scales: {layer_name: scale_factors} dict.
+        scales: {layer_name: scale_factors} from compute_all_scales().
         group_size: INT4 group size.
-        output_dir: Where to save quantized state.
+        output_dir: Where to save quantized state. If None, not saved to disk.
         verbose: Print progress.
+        device: Device for dequantization ("cpu" or "cuda"). For quantization
+            itself, CPU is always used for memory safety.
 
     Returns:
-        Quantized state dict.
+        Quantized state dict: {normalized_layer_name: quantized_dict}.
     """
     quantized_state: dict[str, dict] = {}
     total_fp16_bytes = 0
@@ -172,38 +180,12 @@ def quantize_all_layers_memory_safe(
         print(f"Quantizing model at {model_path}")
         print(f"  Using {len(scales)} layer scales")
 
-    # Build a name map: safetensors name → calibration name
-    # Calibration stats use "model.layers.X.xxx" but safetensors use
-    # "model.language_model.layers.X.xxx.weight"
-    def normalize_safetensors_name(name: str) -> str:
-        """Convert safetensors weight name to calibration stat key."""
-        # Remove .weight suffix
-        key = name.replace(".weight", "")
-        # Remove "language_model." prefix if present
-        key = key.replace("model.language_model.", "model.")
-        return key
-
-    # Explicitly skip layers: lm_head, tiny projections, and even-numbered layers
-    SKIP_LAYERS = {"lm_head", "model.lm_head", "model.model.lm_head"}
-    # Tiny projections (d_out=16)
-    for i in range(0, 24, 2):  # only even layers that also have linear_attn
-        for name in ("in_proj_a", "in_proj_b"):
-            SKIP_LAYERS.add(f"model.layers.{i}.linear_attn.{name}")
-    # Even-numbered layers → keep in FP16 to prevent error compounding
-    for i in range(0, 24, 2):  # 0, 2, 4, ..., 22
-        for key in list(scales.keys()):
-            if f"model.layers.{i}." in key:
-                SKIP_LAYERS.add(key)
-
     for tensor_name, sf_path in iter_weights(model_path):
         calib_key = normalize_safetensors_name(tensor_name)
-        if calib_key in SKIP_LAYERS:
-            if verbose:
-                print(f"  [SKIP] {tensor_name}")
-            continue
+
         if calib_key not in scales:
             if verbose:
-                print(f"  [SKIP] {tensor_name} → {calib_key} — no scale found")
+                print(f"  [SKIP] {tensor_name} → no scale found")
             continue
 
         scale = scales[calib_key]
@@ -217,7 +199,7 @@ def quantize_all_layers_memory_safe(
         if verbose:
             print(f"shape={list(weight.shape)} → quantizing...", end=" ", flush=True)
 
-        # Quantize
+        # Quantize on CPU
         q = quantize_layer_cpu(weight, scale, group_size=group_size)
         quantized_state[calib_key] = q
 
@@ -245,29 +227,24 @@ def quantize_all_layers_memory_safe(
         print(f"  Compression: {total_ratio:.1f}× ({100 / total_ratio:.1f}% of original)")
 
     # Save
-    if output_dir is None:
-        output_dir = os.path.join(RESULTS_DIR, "qwen_awq_int4")
-    os.makedirs(output_dir, exist_ok=True)
+    if output_dir is not None:
+        os.makedirs(output_dir, exist_ok=True)
+        meta = {
+            "model": os.path.basename(model_path.rstrip("/")),
+            "method": "AWQ + INT4 group-wise",
+            "group_size": group_size,
+            "alpha": 0.5,
+            "layers_quantized": len(quantized_state),
+            "fp16_mb": round(total_fp16_bytes / 1e6, 1),
+            "int4_mb": round(total_quantized_bytes / 1e6, 1),
+            "compression_ratio": round(total_ratio, 1),
+        }
+        with open(os.path.join(output_dir, "metadata.json"), "w") as f:
+            json.dump(meta, f, indent=2)
 
-    # Save metadata separately (not in the same dict to keep loading fast)
-    meta = {
-        "model": model_path.split("/")[-1],
-        "method": "AWQ + INT4 group-wise",
-        "group_size": group_size,
-        "alpha": 0.5,
-        "layers_quantized": len(quantized_state),
-        "fp16_mb": round(total_fp16_bytes / 1e6, 1),
-        "int4_mb": round(total_quantized_bytes / 1e6, 1),
-        "compression_ratio": round(total_ratio, 1),
-    }
-    with open(os.path.join(output_dir, "metadata.json"), "w") as f:
-        json.dump(meta, f, indent=2)
-
-    # Save quantized state
-    torch.save(quantized_state, os.path.join(output_dir, "quantized_state.pt"))
-    if verbose:
-        print(f"\nSaved quantized model → {os.path.join(output_dir, 'quantized_state.pt')}")
-        log_memory("post_quantize")
+        torch.save(quantized_state, os.path.join(output_dir, "quantized_state.pt"))
+        if verbose:
+            print(f"\nSaved quantized model → {os.path.join(output_dir, 'quantized_state.pt')}")
 
     return quantized_state
 
@@ -286,12 +263,14 @@ def verify_reconstruction(
     checked = 0
 
     for tensor_name, sf_path in iter_weights(model_path):
-        if tensor_name not in quantized_state:
+        calib_key = normalize_safetensors_name(tensor_name)
+
+        if calib_key not in quantized_state:
             continue
         if checked >= num_layers:
             break
 
-        q = quantized_state[tensor_name]
+        q = quantized_state[calib_key]
         d_out, d_in = q["shape"]
         group_size = q["group_size"]
 
@@ -300,18 +279,17 @@ def verify_reconstruction(
 
         # Dequantize
         deq_parts: list[torch.Tensor] = []
-        for g_idx, (packed, qscale) in enumerate(zip(q["packed_weights"], q["group_scales"])):
+        for packed, qscale in zip(q["packed_weights"], q["group_scales"]):
             w_deq = _dequantize_group(packed, qscale, d_out, group_size)
             deq_parts.append(w_deq)
 
         deq_weight = torch.cat(deq_parts, dim=1)[:, :d_in]
 
         mse = (fp16_weight - deq_weight).pow(2).mean().item()
-        max_err = (fp16_weight - deq_weight).abs().max().item()
-        errors[tensor_name] = mse
+        errors[calib_key] = mse
 
         if verbose:
-            print(f"  {tensor_name:<55} MSE={mse:.8f}  max_abs_err={max_err:.4f}")
+            print(f"  {calib_key:<55} MSE={mse:.8f}")
 
         checked += 1
 
@@ -333,34 +311,3 @@ def _dequantize_group(
     w_deq = torch.stack([low, high], dim=-1).reshape(d_out, group_size)
     w_deq = w_deq.to(dtype=torch.float16) * group_scale.to(dtype=torch.float16)
     return w_deq
-
-
-if __name__ == "__main__":
-    import sys
-
-    sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
-    MODEL_PATH = "models/Qwen3.5-2B-FP16"
-    SCALES_PATH = os.path.join(RESULTS_DIR, "awq_scales.pt")
-
-    print(f"Loading scales from {SCALES_PATH}...")
-    scales = torch.load(SCALES_PATH, map_location="cpu", weights_only=True)
-    print(f"  {len(scales)} layer scales loaded")
-
-    # Quantize — never loads the full model
-    log_memory("before_quantize")
-    quantized = quantize_all_layers_memory_safe(
-        MODEL_PATH,
-        scales,
-        group_size=32,
-        verbose=True,
-    )
-
-    # Quick verification on a few layers
-    print("\nVerifying reconstruction quality (3 layers)...")
-    errors = verify_reconstruction(quantized, MODEL_PATH, num_layers=3)
-    avg_mse = sum(errors.values()) / max(len(errors), 1)
-    print(f"\n  Average MSE: {avg_mse:.8f}")
-
-    print(f"\n✅ Quantization complete. {len(quantized)} layers quantized.")
-    log_memory("final")

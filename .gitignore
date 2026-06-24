@@ -2,7 +2,6 @@
 models/
 
 # Python
-__pycache__/
 *.pyc
 *.pyo
 *.egg-info/
@@ -26,3 +25,11 @@ Thumbs.db
 # Data
 data/raw/
 *.lock
+
+# Results (generated artifacts)
+results/
+!results/.gitkeep
+
+# Tests
+.pytest_cache/
+__pycache__/

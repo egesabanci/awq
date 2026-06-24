@@ -7,6 +7,7 @@ Aggregates channel importance ON-THE-FLY inside the hook,
 so memory stays O(d_in) per layer instead of O(n_samples × tokens × d_in).
 """
 
+import gc
 import os
 from typing import Any
 
@@ -14,12 +15,10 @@ import torch
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from utils.memory import memory_tracker
-
-RESULTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "results")
+from utils.memory import memory_tracker, get_device
 
 
-def _is_linear_layer(module: torch.nn.Module) -> bool:
+def is_linear_layer(module: torch.nn.Module) -> bool:
     """Check if a module is a linear layer (not embedding, not norm)."""
     return isinstance(module, torch.nn.Linear)
 
@@ -67,7 +66,7 @@ def register_calibration_hooks(
         return _hook
 
     for name, module in model.named_modules():
-        if _is_linear_layer(module):
+        if is_linear_layer(module):
             hook = module.register_forward_hook(_make_hook(name))
             hooks.append(hook)
 
@@ -80,7 +79,7 @@ def run_calibration(
     calibration_prompts: list[str],
     output_path: str | None = None,
     max_length: int = 4096,
-    device: str = "mps",
+    device: str | None = None,
     verbose: bool = True,
     batch_size: int = 10,
 ) -> dict[str, torch.Tensor]:
@@ -94,14 +93,18 @@ def run_calibration(
         tokenizer: Model tokenizer.
         calibration_prompts: List of formatted prompt strings.
         output_path: Where to save calibration stats .pt file.
+            If None, stats are not saved to disk (just returned).
         max_length: Max sequence length per sample.
-        device: Torch device string.
+        device: Torch device string. Auto-detected if None.
         verbose: Print progress.
         batch_size: Number of samples per batch (lower = less memory).
 
     Returns:
         dict of {layer_name: channel_importance_tensor}
     """
+    if device is None:
+        device = get_device()
+
     running_sums, running_counts, hooks = register_calibration_hooks(model)
 
     model.eval()
@@ -109,12 +112,9 @@ def run_calibration(
 
     if verbose:
         print(f"Running calibration on {n_prompts} samples "
-              f"(batch_size={batch_size}, max_length={max_length})...")
+              f"(batch_size={batch_size}, max_length={max_length}, device={device})...")
 
-    # Process in batches to keep memory bounded.
-    # Each batch runs forward pass, then we aggressively clean up.
-    import gc
-
+    # Process in batches to keep memory bounded
     with torch.no_grad():
         for batch_start in range(0, n_prompts, batch_size):
             batch = calibration_prompts[batch_start:batch_start + batch_size]
@@ -142,77 +142,39 @@ def run_calibration(
 
             # Aggressive cleanup between batches
             gc.collect()
-            torch.mps.empty_cache()
+            _empty_device_cache(device)
 
     # Cleanup hooks
     for hook in hooks:
         hook.remove()
 
-    # Average the running sums (try/except to save partial results on crash)
+    # Average the running sums
     calibration_stats: dict[str, torch.Tensor] = {}
-    try:
-        for layer_name, running_sum in running_sums.items():
-            count = running_counts.get(layer_name, 1)
-            calibration_stats[layer_name] = running_sum / count
+    for layer_name, running_sum in running_sums.items():
+        count = running_counts.get(layer_name, 1)
+        calibration_stats[layer_name] = running_sum / count
 
-            if verbose:
-                d_in = calibration_stats[layer_name].size(0)
-                max_ci = calibration_stats[layer_name].max().item()
-                mean_ci = calibration_stats[layer_name].mean().item()
-                print(f"  {layer_name:<55} d_in={d_in:<5} samples={count:<4} "
-                      f"max_ci={max_ci:.4f}  mean_ci={mean_ci:.4f}")
-    except Exception as e:
-        print(f"\n[WARN] Error averaging stats: {e}")
-        # Save what we have
-        calibration_stats = running_sums
+        if verbose:
+            d_in = calibration_stats[layer_name].size(0)
+            max_ci = calibration_stats[layer_name].max().item()
+            mean_ci = calibration_stats[layer_name].mean().item()
+            print(f"  {layer_name:<55} d_in={d_in:<5} samples={count:<4} "
+                  f"max_ci={max_ci:.4f}  mean_ci={mean_ci:.4f}")
 
-    # Always save (even on partial failure)
-    if output_path is None:
-        output_path = os.path.join(RESULTS_DIR, "calibration_stats_v2.pt")
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    torch.save(calibration_stats, output_path)
-    if verbose:
-        print(f"\nSaved calibration stats → {output_path}")
-        print(f"  Layers captured: {len(calibration_stats)}")
+    # Save if output_path is provided
+    if output_path is not None:
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        torch.save(calibration_stats, output_path)
+        if verbose:
+            print(f"\nSaved calibration stats → {output_path}")
+            print(f"  Layers captured: {len(calibration_stats)}")
 
     return calibration_stats
 
 
-if __name__ == "__main__":
-    import sys
-
-    sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-    from data.loader import load_toolace_splits, format_prompt
-
-    # Limit MPS memory before loading model
-    from utils.memory import limit_mps_memory, log_memory
-    limit_mps_memory(0.7)
-
-    # Load calibration data — AWQ paper uses 128 samples
-    calib_samples, _ = load_toolace_splits(
-        calibration_size=128,
-        eval_size=100,
-        seed=42,
-    )
-    prompts = [format_prompt(s) for s in calib_samples]
-    print(f"Loaded {len(prompts)} calibration prompts (128 recommended by AWQ paper)")
-
-    # Load model
-    from eval.runner import load_fp16_model
-
-    model, tokenizer = load_fp16_model(
-        "models/Qwen3.5-2B-FP16", device="mps"
-    )
-    log_memory("after_model_load")
-
-    # Run calibration with memory tracking
-    with memory_tracker("calibration"):
-        stats = run_calibration(
-            model, tokenizer, prompts,
-            batch_size=5,
-            max_length=2048,
-            verbose=True,
-        )
-
-    print(f"\n✅ Calibration complete. {len(stats)} layers captured.")
-    log_memory("final")
+def _empty_device_cache(device: str) -> None:
+    """Empty device cache based on backend."""
+    if device == "cuda":
+        torch.cuda.empty_cache()
+    elif device == "mps":
+        torch.mps.empty_cache()
