@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "awq-qwen-experiment"
+name = "awq"
 version = "0.2.0"
-description = "AWQ quantization experimentation pipeline"
+description = "Model-agnostic AWQ (Activation-aware Weight Quantization) CLI"
 readme = "README.md"
 license = { text = "MIT" }
 authors = [
@@ -24,13 +24,12 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/egesabanci/awq-qwen-experiment"
+Repository = "https://github.com/egesabanci/awq"
 
 [tool.hatch.build.targets.wheel]
 packages = [
     "awq",
     "data",
-    "eval",
     "utils",
 ]
 

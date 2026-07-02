@@ -29,7 +29,6 @@ data/processed/
 
 # Results (generated artifacts)
 results/
-!results/.gitkeep
 
 # Tests
 .pytest_cache/
