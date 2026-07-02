@@ -83,12 +83,12 @@ python -m awq --help
 
 The pipeline is intentionally linear and inspectable.
 
-| Step         | What happens                                                                                                                                                    | Artifact                                            |
-| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- | ------------------------------- | ---------------------- |
-| 1. Calibrate | Forward calibration samples through the FP16 model; aggregate per-input-channel activation magnitude `                                                          | X                                                   | .mean(0)` on-the-fly via hooks. | `calibration_stats.pt` |
-| 2. Scales    | For each linear layer, grid-search α and compute per-channel AWQ scales `s = (x_max^α) / (mean^α)`, scored by activation-weighted reconstruction of `Q(W·s)/s`. | `awq_scales.pt`                                     |
-| 3. Quantize  | Read each weight tensor from `safetensors`, scale `W·s`, pack to group-wise INT4 (two INT4 per byte), store group scales + AWQ scales.                          | `awq_quantized/quantized_state.pt`, `metadata.json` |
-| 4. Verify    | Dequantize a few layers (same path as inference) and report MSE vs. the original weights.                                                                       | printed MSE                                         |
+| Step | What happens | Artifact |
+| --- | --- | --- |
+| 1. Calibrate | Forward calibration samples through the FP16 model; aggregate per-input-channel activation magnitude `\|X\|.mean(0)` on-the-fly via hooks. | `calibration_stats.pt` |
+| 2. Scales | For each linear layer, grid-search α and compute per-channel AWQ scales `s = (x_max^α) / (mean^α)`, scored by activation-weighted reconstruction of `Q(W·s)/s`. | `awq_scales.pt` |
+| 3. Quantize | Read each weight tensor from `safetensors`, scale `W·s`, pack to group-wise INT4 (two INT4 per byte), store group scales + AWQ scales. | `awq_quantized/quantized_state.pt`, `metadata.json` |
+| 4. Verify | Dequantize a few layers (same path as inference) and report MSE vs. the original weights. | printed MSE |
 
 Run all steps with one command:
 
@@ -112,42 +112,42 @@ python -m awq --help
 
 ### Global options
 
-| Option     | Default  | Description                                        |
-| ---------- | -------- | -------------------------------------------------- |
-| `--model`  | required | Model path or Hugging Face repo ID.                |
-| `--device` | auto     | `cuda`, `mps`, or `cpu`. Auto-detected if omitted. |
-| `--quiet`  | off      | Suppress progress output.                          |
+| Option | Default | Description |
+| --- | --- | --- |
+| `--model` | required | Model path or Hugging Face repo ID. |
+| `--device` | auto | `cuda`, `mps`, or `cpu`. Auto-detected if omitted. |
+| `--quiet` | off | Suppress progress output. |
 
 ### `awq calibrate`
 
-| Option         | Default                        | Description                                                 |
-| -------------- | ------------------------------ | ----------------------------------------------------------- |
-| `--dataset`    | `wikitext`                     | Calibration dataset (`wikitext`, `c4`).                     |
-| `--output`     | `results/calibration_stats.pt` | Output path for activation stats.                           |
-| `--samples`    | `128`                          | Number of calibration samples.                              |
-| `--batch-size` | `5`                            | Cache-clear cadence between samples (see calibration docs). |
-| `--max-length` | `2048`                         | Max sequence length per sample.                             |
+| Option | Default | Description |
+| --- | --- | --- |
+| `--dataset` | `wikitext` | Calibration dataset (`wikitext`, `c4`). |
+| `--output` | `results/calibration_stats.pt` | Output path for activation stats. |
+| `--samples` | `128` | Number of calibration samples. |
+| `--batch-size` | `5` | Cache-clear cadence between samples (see calibration docs). |
+| `--max-length` | `2048` | Max sequence length per sample. |
 
 ### `awq scales`
 
-| Option                | Default                 | Description                                                                |
-| --------------------- | ----------------------- | -------------------------------------------------------------------------- |
-| `--calibration-stats` | required                | Path to `calibration_stats.pt`.                                            |
-| `--output`            | `results/awq_scales.pt` | Output path for scale factors.                                             |
-| `--group-size`        | `32`                    | INT4 group size; must match `awq quantize`.                                |
-| `--alpha`             | `0.5`                   | Fixed exponent, used only with `--no-grid-search`.                         |
-| `--no-grid-search`    | off                     | Disable per-layer α search; use `--alpha` instead.                         |
-| `--quantize-strategy` | `alternating`           | Which layers to quantize: `all`, `alternating`, `last_only`, `first_only`. |
-| `--no-skip-lm-head`   | off                     | Include `lm_head` in quantization (not recommended).                       |
+| Option | Default | Description |
+| --- | --- | --- |
+| `--calibration-stats` | required | Path to `calibration_stats.pt`. |
+| `--output` | `results/awq_scales.pt` | Output path for scale factors. |
+| `--group-size` | `32` | INT4 group size; must match `awq quantize`. |
+| `--alpha` | `0.5` | Fixed exponent, used only with `--no-grid-search`. |
+| `--no-grid-search` | off | Disable per-layer α search; use `--alpha` instead. |
+| `--quantize-strategy` | `alternating` | Which layers to quantize: `all`, `alternating`, `last_only`, `first_only`. |
+| `--no-skip-lm-head` | off | Include `lm_head` in quantization (not recommended). |
 
 ### `awq quantize`
 
-| Option            | Default                 | Description                                      |
-| ----------------- | ----------------------- | ------------------------------------------------ |
-| `--scales`        | required                | Path to `awq_scales.pt`.                         |
-| `--output-dir`    | `results/awq_quantized` | Output directory for the quantized model.        |
-| `--group-size`    | `32`                    | INT4 group size (32–128).                        |
-| `--verify-layers` | `3`                     | Layers to verify post-quantization. `0` to skip. |
+| Option | Default | Description |
+| --- | --- | --- |
+| `--scales` | required | Path to `awq_scales.pt`. |
+| `--output-dir` | `results/awq_quantized` | Output directory for the quantized model. |
+| `--group-size` | `32` | INT4 group size (32–128). |
+| `--verify-layers` | `3` | Layers to verify post-quantization. `0` to skip. |
 
 ### `awq run` — full pipeline
 
