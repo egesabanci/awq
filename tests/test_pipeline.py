@@ -491,3 +491,50 @@ class TestPipelineRobustness:
                                     grid_search=False, verbose=False)
         assert "lin" in scales
         assert scales["lin"].shape == (8,)
+
+
+@pytest.mark.skipif(
+    not os.environ.get("AWQ_INTEGRATION"),
+    reason="Set AWQ_INTEGRATION=1 (and optionally AWQ_INTEGRATION_MODEL) to run the end-to-end CLI smoke test; needs network + a real model.",
+)
+class TestIntegrationCLI:
+    """End-to-end smoke test: invoke `awq run` as a subprocess on a real model.
+
+    Opt-in because it downloads/loads a real model. Intended for CUDA/EC2 or
+    any machine with enough RAM. Run with:
+        AWQ_INTEGRATION=1 pytest -q tests/test_pipeline.py -k integration
+    Override the model and sample budget via env vars:
+        AWQ_INTEGRATION_MODEL (default Qwen/Qwen3-0.6B)
+        AWQ_INTEGRATION_SAMPLES (default 8)
+        AWQ_INTEGRATION_MAX_LENGTH (default 512)
+    """
+
+    def test_awq_run_end_to_end(self, tmp_path):
+        import subprocess
+
+        model = os.environ.get("AWQ_INTEGRATION_MODEL", "Qwen/Qwen3-0.6B")
+        samples = os.environ.get("AWQ_INTEGRATION_SAMPLES", "8")
+        max_length = os.environ.get("AWQ_INTEGRATION_MAX_LENGTH", "512")
+        out_dir = tmp_path / "out"
+
+        cmd = [
+            sys.executable, "-m", "awq", "run",
+            "--model", model,
+            "--dataset", "wikitext",
+            "--output-dir", str(out_dir),
+            "--samples", samples,
+            "--max-length", max_length,
+            "--verify-layers", "1",
+        ]
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.path.dirname(os.path.dirname(__file__)) + os.pathsep + env.get("PYTHONPATH", "")
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=1800)
+
+        assert result.returncode == 0, (
+            f"awq run exited {result.returncode}\nSTDOUT:\n{result.stdout[-2000:]}\nSTDERR:\n{result.stderr[-2000:]}"
+        )
+        # All three artifacts must exist.
+        assert (out_dir / "calibration_stats.pt").exists()
+        assert (out_dir / "awq_scales.pt").exists()
+        assert (out_dir / "awq_quantized" / "quantized_state.pt").exists()
+        assert (out_dir / "awq_quantized" / "metadata.json").exists()
