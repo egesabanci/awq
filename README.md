@@ -5,6 +5,7 @@
 **Model-agnostic Activation-aware Weight Quantization (AWQ) for causal LMs.**
 
 [Quick Start](#quick-start) |
+[Research](#research) |
 [Workflow](#workflow) |
 [CLI Reference](#cli-reference) |
 [Artifacts](#artifacts) |
@@ -203,6 +204,12 @@ Tested on: Qwen3-0.6B / 1.7B / 8B on CUDA (NVIDIA L4). `awq export` produces a
 runtime-loadable AutoAWQ/HF-AWQ model (PPL 1.034x FP16 on 8B - see
 [docs/benchmarks.md](docs/benchmarks.md)). Larger models (7B+) require a CUDA
 box - see [docs/ec2.md](docs/ec2.md).
+
+## Research
+
+A tech-targeted research report on the 8B result —
+**[4× Smaller, Near-Zero Loss: From-Scratch AWQ INT4 on Qwen3-8B](research/awq-int4-runtime.md)**
+(PPL 10.08 vs FP16 9.75 = 1.034×, 4.0× linear-weight compression, AutoAWQ-loadable).
 
 ## Technical Docs
 
