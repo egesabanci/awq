@@ -1,10 +1,10 @@
 # CLI
 
-Command-line reference for `python -m awq`.
+Command-line reference for `awq` (also invokable as `python -m awq`).
 
 ```bash
-python -m awq --help
-python -m awq <command> [options]
+awq --help
+awq <command> [options]
 ```
 
 ## Subcommands
@@ -31,7 +31,7 @@ this CLI.
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `--dataset` | `wikitext` | `wikitext` (bundled) or `c4` (streams from HF; slow). |
+| `--dataset` | `wikitext` | Calibration dataset (bundled WikiText-2 samples; falls back to HF `Salesforce/wikitext` if the bundle is absent). |
 | `--output` | `results/calibration_stats.pt` | Output path for `calibration_stats.pt`. |
 | `--samples` | `128` | Number of calibration samples. |
 | `--batch-size` | `5` | Cache-clear cadence (see [calibration.md](calibration.md) — there is no real batching). |
@@ -48,6 +48,7 @@ On MPS, `limit_memory(0.7, "mps")` is applied before the model loads.
 | `--group-size` | `32` | INT4 group size; must match `awq quantize`. |
 | `--alpha` | `0.5` | Fixed exponent, used only with `--no-grid-search`. |
 | `--no-grid-search` | off | Use fixed `--alpha` instead of the per-layer α search. |
+| `--n-grid` | `20` | Number of α candidates for the grid search (per AWQ paper). |
 | `--quantize-strategy` | `alternating` | `all` / `alternating` / `last_only` / `first_only` (layer count derived from stats). |
 | `--no-skip-lm-head` | off | Include `lm_head` in quantization (not recommended). |
 | `--device` | auto | Device for the model load (weights read for grid search). |
@@ -71,8 +72,8 @@ Quantization runs on CPU, reading `safetensors` one tensor at a time.
 Runs the three phases with a single model load freed between phases. Accepts
 the union of `calibrate` + `scales` + `quantize` options: `--model`,
 `--dataset`, `--output-dir`, `--samples`, `--batch-size`, `--max-length`,
-`--group-size`, `--alpha`, `--no-grid-search`, `--quantize-strategy`,
-`--device`, `--quiet`.
+`--group-size`, `--alpha`, `--no-grid-search`, `--n-grid`,
+`--quantize-strategy`, `--device`, `--quiet`.
 
 ## Failure behavior
 

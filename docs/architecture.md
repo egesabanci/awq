@@ -12,7 +12,7 @@ Module boundaries, dependency timing, and data flow for `awq`.
 | `awq/calibrate.py` | Forward hooks aggregating `|X|.mean(0)` per linear layer. | `torch`, `transformers` (inside `run_calibration`). |
 | `awq/scales.py` | Per-layer AWQ scale computation + α grid search + skip-set builder. | `torch` (inside `compute_awq_scale`). |
 | `awq/quantize.py` | `safetensors` streaming, INT4 packing, `dequantize_layer`, `verify_reconstruction`. | `safetensors` (inside `iter_weights`/`load_weight_from_safetensors`). |
-| `awq/inference.py` | `load_awq_model` (dequantize + inject), `AWQModelWrapper`. | `torch`, `transformers`. |
+| `awq/inference.py` | `load_awq_model` (dequantize + inject linear weights). | `torch`, `transformers`. |
 | `utils/memory.py` | Device detection, MPS/CUDA memory limiting, tracking. | `torch`. |
 | `utils/errors.py` | Exceptions, `retry_with_backoff`, validation, OOM diagnostics. | `torch` (only inside `require_*` / `diagnose_oom`). |
 | `data/natural_calibration.json` | Bundled WikiText-2 calibration samples (loaded by path). | None. |

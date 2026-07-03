@@ -32,17 +32,6 @@ Concatenate groups, slice to `d_in`, then **divide by the AWQ scale**:
 > produces coherent output. For real INT4 execution, hand `quantized_state.pt`
 > to an INT4-aware runtime (vLLM, TGI, MLX, TensorRT-LLM).
 
-## `AWQModelWrapper`
-
-Keeps quantized weights on CPU in packed INT4 form and dequantizes one layer
-at a time on the device, caching results. This is the memory-efficient path
-(peak ≈ INT4 footprint + one layer, not the whole FP16 model).
-
-It is **not** wired into the CLI's generation path — the CLI does not generate
-text. It is provided as a library primitive for callers who want on-the-fly
-dequantization. `get_weight(module_name)` returns the cached dequantized
-weight; `clear_cache()` frees it.
-
 ## Generating from the quantized model (library use)
 
 ```python

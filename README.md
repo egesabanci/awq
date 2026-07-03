@@ -122,7 +122,7 @@ python -m awq --help
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `--dataset` | `wikitext` | Calibration dataset (`wikitext`, `c4`). |
+| `--dataset` | `wikitext` | Calibration dataset (bundled WikiText-2 samples). |
 | `--output` | `results/calibration_stats.pt` | Output path for activation stats. |
 | `--samples` | `128` | Number of calibration samples. |
 | `--batch-size` | `5` | Cache-clear cadence between samples (see calibration docs). |
@@ -137,6 +137,7 @@ python -m awq --help
 | `--group-size` | `32` | INT4 group size; must match `awq quantize`. |
 | `--alpha` | `0.5` | Fixed exponent, used only with `--no-grid-search`. |
 | `--no-grid-search` | off | Disable per-layer α search; use `--alpha` instead. |
+| `--n-grid` | `20` | Number of α candidates for the grid search (per AWQ paper). |
 | `--quantize-strategy` | `alternating` | Which layers to quantize: `all`, `alternating`, `last_only`, `first_only`. |
 | `--no-skip-lm-head` | off | Include `lm_head` in quantization (not recommended). |
 
@@ -154,7 +155,7 @@ python -m awq --help
 Runs calibrate → scales → quantize (+ verify). Accepts the union of the
 options above (`--model`, `--dataset`, `--output-dir`, `--samples`,
 `--batch-size`, `--max-length`, `--group-size`, `--alpha`, `--no-grid-search`,
-`--quantize-strategy`, `--device`, `--quiet`).
+`--n-grid`, `--quantize-strategy`, `--device`, `--quiet`).
 
 ## Artifacts
 
