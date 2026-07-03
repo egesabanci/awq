@@ -88,10 +88,9 @@ Stored per layer: `packed_weights` (list of uint8 tensors), `group_scales`
 ## Reconstruction verification (`verify_reconstruction`)
 
 Dequantizes `--verify-layers` layers via the **canonical `dequantize_layer`**
-(the same path `awq.inference` uses) and reports MSE against the original
-weight read from `safetensors`. Because verify and inference share the dequant
-path, the reported MSE is exactly the error inference incurs — not a
-proxy.
+and reports MSE against the original weight read from `safetensors`. This is a
+reconstruction-quality check, not an inference path — running the model is done
+via `awq export` + a real INT4 runtime (which folds `s` into the norm).
 
 ## Compression (`metadata.json`)
 

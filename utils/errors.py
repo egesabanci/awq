@@ -105,13 +105,6 @@ def diagnose_oom(device: str) -> None:
             total = torch.cuda.get_device_properties(0).total_memory / 1e9
             print(f"  GPU allocated: {allocated:.2f}/{total:.1f} GB")
             print(f"  GPU cached:    {cached:.2f} GB")
-        elif device == "mps":
-            current = torch.mps.current_allocated_memory() / 1e9
-            driver = torch.mps.driver_allocated_memory() / 1e9
-            recommended = torch.mps.recommended_max_memory() / 1e9
-            print(f"  MPS current:  {current:.2f} GB")
-            print(f"  MPS driver:   {driver:.2f} GB")
-            print(f"  MPS max:      {recommended:.2f} GB")
     except Exception as e:
         print(f"  (memory query failed: {e})")
 

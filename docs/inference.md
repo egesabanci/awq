@@ -1,51 +1,23 @@
-# Inference
+# Inference — running a quantized model
 
-Dequantization and model loading for AWQ-quantized weights — `awq/inference.py`.
+`awq`'s native artifact (`awq_quantized/quantized_state.pt`) is a custom INT4
+layout no external runtime can consume. To **run** the quantized model, use
+`awq export` to re-pack it into the **AutoAWQ / HF-AWQ GEMM on-disk format**
+that real INT4 runtimes (AutoAWQ, vLLM) load directly.
 
-## `dequantize_layer(q)`
-
-The canonical dequantizer (also imported by `awq.quantize.verify_reconstruction`,
-so verify and inference share one path). For each group:
-
-```
-low  = packed & 0x0F;        high = (packed >> 4) & 0x0F
-low  = low > 7  ? low - 16  : low      # two's-complement sign fix
-high = high > 7 ? high - 16 : high
-w_group = stack([low, high]) * group_scale      # ≈ (W·s) for that group
-```
-
-Concatenate groups, slice to `d_in`, then **divide by the AWQ scale**:
-`Ŵ = w / s`. Result: an FP16 `[d_out, d_in]` weight approximating the original.
-
-## `load_awq_model(quantized_path, model_path, device)`
-
-1. Load the FP16 model shell via the shared `awq.models.load_model`.
-2. `torch.load` the quantized state (CPU, `weights_only=True`).
-3. For each quantized layer, `dequantize_layer` → overwrite the matching
-   `nn.Linear.weight.data` with the dequantized FP16 weight.
-4. `model.eval()`.
-
-> **No INT4 kernel.** This is dequantized-FP16 inference: the model runs a
-> normal FP16 forward with weights that happen to be INT4-derived. There is
-> **no** inference speed or memory benefit — peak memory is ~one full FP16
-> model. Use this path to sanity-check that the quantized artifact still
-> produces coherent output. For real INT4 execution, **export** the artifact
-> (see below) and hand the exported directory to AutoAWQ or vLLM.
-
-## Exporting to a runtime-loadable INT4 model (`awq export`)
-
-`quantized_state.pt` is a custom layout no external runtime can consume.
-`awq export` re-packs it into the **AutoAWQ GEMM on-disk format**
-(`qweight`/`qzeros`/`scales` + `quantize_config.json`) that
-`AutoAWQForCausalLM` and vLLM's `awq` loader read directly:
+## `awq export`
 
 ```bash
 awq export --model Qwen/Qwen3-1.7B \
   --from out-1.7b/awq_quantized/quantized_state.pt --to out-1.7b/awq_hf \
-  --group-size 128
+  --group-size 128            # add --device cuda for large models
 ```
 
-### Scale reconciliation (the hard part)
+Produces a directory with AutoAWQ GEMM `qweight`/`qzeros`/`scales` (int32/fp16)
+per quantized linear, a folded-`1/s` norm, `quantize_config.json`, and the
+copied config/tokenizer. See [cli.md](cli.md) and [quantization.md](quantization.md).
+
+## Scale reconciliation (the hard part)
 
 Our pipeline computes an *independent* per-channel AWQ scale `s` for every
 linear. A loadable HF-AWQ model folds `1/s` into the **preceding norm**'s
@@ -65,7 +37,7 @@ storing `zero = 7` and `q_unsigned = q_signed + 7`, so the runtime's
 `(q - zero) * scale` reproduces our group dequant exactly — **no
 re-quantization error** on the AWQ-scaled linears.
 
-### Loading the exported model
+## Loading the exported model
 
 ```python
 # AutoAWQ real INT4 GEMM runtime (torch 2.6 compatible)
@@ -80,25 +52,19 @@ m = AutoAWQForCausalLM.from_quantized("out-1.7b/awq_hf", device_map="auto")
 > **Name collision.** AutoAWQ ships a top-level `awq` package that collides
 > with this repo's `awq` import name — you cannot `import` both at once. Run
 > AutoAWQ in a separate process (or bypass the editable finder) as
-> `eval/ppl.py` does. This is why `awq export` does **not** depend on
-> AutoAWQ at runtime: the packing is reimplemented in pure torch inside
-> `awq/export.py` and unit-tested against AutoAWQ's documented GEMM dequant.
+> `eval/ppl.py` does. This is why `awq export` does **not** depend on AutoAWQ
+> at runtime: the packing is reimplemented in pure torch inside `awq/export.py`
+> and unit-tested against AutoAWQ's documented GEMM dequant.
 
-## Generating from the quantized model (library use)
+> **No dequant-to-FP16 inference path.** An earlier `awq.inference` path
+> dequantized weights back to FP16 and ran a plain forward (a MacBook/MPS
+> workaround for the lack of INT4 kernels there). It amplified INT4 error on
+> small-`s` channels and produced garbage on viable models (see
+> [benchmarks.md](benchmarks.md)), so it was removed. Use `awq export` + a
+> real INT4 runtime instead.
 
-```python
-from awq.models import load_model
-from awq.inference import load_awq_model
+## Quality
 
-# FP16 baseline
-model, tok = load_model("Qwen/Qwen3-0.6B", "mps")
-# ... model.generate(...) ...
-
-# AWQ (dequantized-FP16)
-qmodel, qtok, qstate = load_awq_model("out/awq/quantized_state.pt",
-                                      "Qwen/Qwen3-0.6B", "mps")
-# ... qmodel.generate(...) ...
-```
-
-Remember: throughput will be ~FP16 (no kernel), so this is for quality
-inspection, not deployment.
+See [benchmarks.md](benchmarks.md): the exported model hits **1.034× FP16
+perplexity on Qwen3-8B** with coherent greedy generation, loaded in AutoAWQ's
+real INT4 GEMM runtime.

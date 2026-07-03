@@ -1,8 +1,8 @@
 """Model loading for the AWQ pipeline.
 
 Provides ``load_model()``: load an FP16 causal LM + tokenizer on the chosen
-device. Used by the calibrate/scales/run subcommands; ``load_awq_model()`` in
-``awq/inference.py`` reuses it so there is a single loading code path.
+device. Used by the calibrate/scales/run subcommands and by ``awq.export`` so
+there is a single loading code path.
 """
 
 import torch
@@ -30,7 +30,7 @@ def load_model(
         device = get_device()
 
     print(f"Loading model from {model_path}...")
-    # device_map="auto" for CUDA (single/multi GPU); device string for MPS/CPU.
+    # device_map="auto" for CUDA (single/multi GPU); device string for CPU.
     device_map = "auto" if device == "cuda" else device
     model = AutoModelForCausalLM.from_pretrained(
         model_path,

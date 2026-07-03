@@ -32,11 +32,9 @@ executes. `awq --help` is instant and side-effect-free.
 `awq` quantizes the linear layers of a Hugging Face causal LM to group-wise
 INT4 with per-channel AWQ scaling, and verifies the result by reconstruction.
 
-It is **not** an INT4 inference engine. Loading the quantized artifact
-(`awq.inference.load_awq_model`) dequantizes weights back to FP16 and runs a
-standard forward — useful for sanity-checking quality, but there is no INT4
-kernel, so no inference speed/memory win. Hand the artifact to an INT4-aware
-runtime (vLLM, TGI, MLX, TensorRT-LLM) for real INT4 execution. See
+It is **not** an INT4 inference engine. To run the quantized model, use
+`awq export` to re-pack the artifact into a runtime-loadable AutoAWQ/HF-AWQ
+INT4 model and load it in a real INT4 runtime (AutoAWQ, vLLM). See
 [inference.md](inference.md).
 
 ## Model compatibility

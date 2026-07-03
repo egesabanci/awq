@@ -5,7 +5,6 @@ Standalone analysis tool (NOT a CLI subcommand). Compares three configs of a
 model against the wikitext-2 test split:
 
   fp16         — the FP16 reference baseline
-  awq-dequant  — awq.inference.load_awq_model (dequantized-FP16; our quality)
   awq-runtime  — AutoAWQ real INT4 GEMM on the exported HF-AWQ model (#25)
 
 Perplexity uses a sliding window (stride, max_length) over the concatenated
@@ -13,8 +12,6 @@ test set and reports exp(mean cross-entropy over non-padded tokens).
 
 Usage:
   python eval/ppl.py --model /data/models/Qwen3-1.7B --config fp16
-  python eval/ppl.py --model /data/models/Qwen3-1.7B --config awq-dequant \
-      --quantized-state /data/out-1.7b/awq_quantized/quantized_state.pt
   python eval/ppl.py --model /data/models/Qwen3-1.7B --config awq-runtime \
       --export-dir /data/out-1.7b/awq_hf --gen
 """
@@ -30,7 +27,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 # Make this repo `awq` package win over the AutoAWQ same-named package for the
-# fp16 / awq-dequant configs. The awq-runtime config reverses this.
+# fp16 config. The awq-runtime config reverses this (loads AutoAWQ).
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Force this repo to the FRONT of sys.path even if the editable .pth already
 # added it at the end (otherwise AutoAWQ site-packages/awq shadows it).
@@ -62,11 +59,6 @@ def _load_fp16(model_path: str, device: str):
     tok = AutoTokenizer.from_pretrained(model_path, trust_remote_code=False)
     model.eval()
     return model, tok
-
-
-def _load_awq_dequant(quantized_state: str, model_path: str, device: str):
-    from awq.inference import load_awq_model
-    return load_awq_model(quantized_state, model_path, device)
 
 
 def _load_awq_runtime(export_dir: str, device: str):
@@ -129,11 +121,10 @@ def greedy_gen(model, tok, device: str, max_new: int = 64) -> dict[str, str]:
 
 def main():
     ap = argparse.ArgumentParser(description="AWQ perplexity + generation measurement")
-    ap.add_argument("--model", required=True, help="FP16 model path (for fp16 / awq-dequant)")
+    ap.add_argument("--model", required=True, help="FP16 model path (for fp16)")
     ap.add_argument("--config", required=True,
-                    choices=["fp16", "awq-dequant", "awq-runtime"],
+                    choices=["fp16", "awq-runtime"],
                     help="Which model config to evaluate")
-    ap.add_argument("--quantized-state", default=None, help="quantized_state.pt (for awq-dequant)")
     ap.add_argument("--export-dir", default=None, help="exported HF-AWQ dir (for awq-runtime)")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--stride", type=int, default=512)
@@ -144,9 +135,6 @@ def main():
 
     if args.config == "fp16":
         model, tok = _load_fp16(args.model, args.device)
-    elif args.config == "awq-dequant":
-        assert args.quantized_state, "--quantized-state required for awq-dequant"
-        model, tok, _ = _load_awq_dequant(args.quantized_state, args.model, args.device)
     elif args.config == "awq-runtime":
         assert args.export_dir, "--export-dir required for awq-runtime"
         model, tok = _load_awq_runtime(args.export_dir, args.device)

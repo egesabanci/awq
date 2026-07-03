@@ -26,10 +26,9 @@ def _warn_if_cuda_mismatch(requested_device: str | None) -> str | None:
             if not torch.cuda.is_available():
                 print("[WARN] --device cuda requested but CUDA is not available.")
                 print("       Install PyTorch with CUDA support:")
-                print("       pip install torch --index-url https://download.pytorch.org/whl/cu121")
-                fallback = "mps" if torch.backends.mps.is_available() else "cpu"
-                print(f"       Falling back to {fallback}.")
-                return fallback
+                print("       pip install torch --index-url https://download.pytorch.org/whl/cu124")
+                print("       Falling back to cpu.")
+                return "cpu"
         except ImportError:
             print("[WARN] torch not importable. Falling back to cpu.")
             return "cpu"
@@ -167,13 +166,10 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
 
     # Load model
     from awq.models import load_model
-    from utils.memory import limit_memory, get_device
+    from utils.memory import get_device
 
     if device is None:
         device = get_device()
-    if device == "mps":
-        limit_memory(0.7, device)
-
     model, tokenizer = load_model(args.model, device)
     from utils.memory import log_memory
     log_memory("after_model_load", device)
@@ -329,13 +325,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     print("─" * 60)
 
     from awq.models import load_model
-    from utils.memory import limit_memory, get_device, log_memory
+    from utils.memory import get_device, log_memory
 
     if device is None:
         device = get_device()
-    if device == "mps":
-        limit_memory(0.7, device)
-
     model, tokenizer = load_model(args.model, device)
     log_memory("after_model_load", device)
 
@@ -495,7 +488,7 @@ def main(argv: list[str] | None = None) -> int:
         traceback.print_exc(file=sys.stderr)
 
         # Memory diagnostics on OOM
-        if "out of memory" in str(e).lower() or "mps" in str(e).lower() or "cuda" in str(e).lower():
+        if "out of memory" in str(e).lower() or "cuda" in str(e).lower():
             from utils.errors import diagnose_oom
             from utils.memory import get_device as _get_device
             diagnose_oom(args.device or _get_device())

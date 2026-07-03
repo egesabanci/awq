@@ -12,8 +12,8 @@
 [Development](#development) |
 [License](#license)
 
-![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.13-blue)
-![Runtime](<https://img.shields.io/badge/Runtime-PyTorch%20(MPS%20%7C%20CUDA%20%7C%20CPU)-orange>)
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
+![Runtime](<https://img.shields.io/badge/Runtime-PyTorch%20(CUDA%20%7C%20CPU)-orange>)
 ![Package](https://img.shields.io/badge/Package-awq-green)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
@@ -31,11 +31,9 @@ than hardcoding layer counts, and it reads weights one tensor at a time from
 `safetensors` so the quantizer itself stays memory-safe.
 
 > **Inference note.** `awq` produces a quantized weight artifact and verifies
-> its reconstruction quality. Loading that artifact (via `awq.inference`)
-> dequantizes weights back to FP16 and runs a standard forward — there is no
-> INT4 kernel, so there is no speed/memory benefit at inference time on its
-> own. For **real INT4 execution**, run `awq export` to produce a
-> runtime-loadable AutoAWQ/HF-AWQ model and hand it to AutoAWQ or vLLM. See
+> its reconstruction quality. To **run** the quantized model, use `awq export`
+> to re-pack the artifact into a runtime-loadable AutoAWQ/HF-AWQ INT4 model and
+> load it in a real INT4 runtime (AutoAWQ, vLLM). See
 > [docs/inference.md](docs/inference.md) and [docs/cli.md](docs/cli.md).
 
 ## Highlights
@@ -50,9 +48,8 @@ than hardcoding layer counts, and it reads weights one tensor at a time from
   quantization runs on CPU and never loads the full model.
 - **Reconstruction verification** — `awq quantize` dequantizes a few layers and
   reports MSE against the original weights, using the exact dequant path
-  inference uses.
-- **Device-agnostic** — auto-detects CUDA, MPS, or CPU; MPS memory is capped
-  via `torch.mps.set_per_process_memory_fraction`.
+  `verify_reconstruction` uses.
+- **CUDA-first** — auto-detects CUDA or CPU.
 - **Import-light CLI** — `torch` / `transformers` are only imported inside the
   subcommand that needs them; `awq --help` is instant.
 
@@ -60,7 +57,7 @@ than hardcoding layer counts, and it reads weights one tensor at a time from
 
 Prerequisites:
 
-- macOS (Apple Silicon), Linux with CUDA, or CPU-only
+- Linux with CUDA (recommended) or CPU-only
 - Python 3.11+
 - PyTorch 2.4+
 - A local FP16 model in `safetensors` (or a Hugging Face repo ID)
@@ -117,7 +114,7 @@ python -m awq --help
 | Option | Default | Description |
 | --- | --- | --- |
 | `--model` | required | Model path or Hugging Face repo ID. |
-| `--device` | auto | `cuda`, `mps`, or `cpu`. Auto-detected if omitted. |
+| `--device` | auto | `cuda` or `cpu`. Auto-detected if omitted. |
 | `--quiet` | off | Suppress progress output. |
 
 ### `awq calibrate`
@@ -216,11 +213,10 @@ awq/
   scales.py        # per-layer AWQ scale computation + α grid search
   quantize.py      # memory-safe INT4 quantizer + reconstruction verify
   export.py        # quantized_state.pt → runtime-loadable AutoAWQ/HF-AWQ INT4
-  inference.py     # dequantization + AWQ model loading
 data/
   natural_calibration.json   # bundled WikiText-2 calibration samples
 utils/
-  memory.py        # device detection, MPS/CUDA memory limiting & tracking
+  memory.py        # device detection, CUDA memory tracking
   errors.py        # exceptions, retry decorator, validation, OOM diagnostics
 tests/
   test_pipeline.py

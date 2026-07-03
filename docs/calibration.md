@@ -31,7 +31,7 @@ holding any activation tensor beyond a single forward.
 - `torch.no_grad()` + `model.eval()` — no autograd graph, no training state.
 - Per-prompt: tokenize → forward → `del inputs` immediately.
 - Between `batch_size` samples: `gc.collect()` + device cache empty
-  (`torch.cuda.empty_cache()` / `torch.mps.empty_cache()`).
+  (`torch.cuda.empty_cache()` on CUDA; no-op on CPU).
 
 > `--batch-size` does **not** batch tokenization or the forward — each sample
 > is forwarded one at a time. It only controls how often the cache is cleared.
@@ -49,5 +49,4 @@ layer (e.g. `model.layers.0.self_attn.q_proj`, `lm_head`).
 
 `run_calibration` moves the per-channel statistic to CPU inside the hook so
 the running sums never accumulate on the device. The model itself stays on
-the chosen device. On MPS, the CLI applies `limit_memory(0.7, "mps")` before
-loading.
+the chosen device (CUDA or CPU).

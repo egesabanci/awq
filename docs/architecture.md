@@ -12,8 +12,8 @@ Module boundaries, dependency timing, and data flow for `awq`.
 | `awq/calibrate.py` | Forward hooks aggregating `|X|.mean(0)` per linear layer. | `torch`, `transformers` (inside `run_calibration`). |
 | `awq/scales.py` | Per-layer AWQ scale computation + α grid search + skip-set builder. | `torch` (inside `compute_awq_scale`). |
 | `awq/quantize.py` | `safetensors` streaming, INT4 packing, `dequantize_layer`, `verify_reconstruction`. | `safetensors` (inside `iter_weights`/`load_weight_from_safetensors`). |
-| `awq/inference.py` | `load_awq_model` (dequantize + inject linear weights). | `torch`, `transformers`. |
-| `utils/memory.py` | Device detection, MPS/CUDA memory limiting, tracking. | `torch`. |
+| `awq/export.py` | Re-pack `quantized_state.pt` into the AutoAWQ/HF-AWQ GEMM on-disk format (norm-folded `s`). | `torch`, `transformers` (inside `export_to_awq`). |
+| `utils/memory.py` | Device detection, CUDA memory tracking. | `torch`. |
 | `utils/errors.py` | Exceptions, `retry_with_backoff`, validation, OOM diagnostics. | `torch` (only inside `require_*` / `diagnose_oom`). |
 | `data/natural_calibration.json` | Bundled WikiText-2 calibration samples (loaded by path). | None. |
 
@@ -49,9 +49,11 @@ model, frees it, then re-loads it for the scales phase.
 
 ## Key invariants
 
-- **Single dequant path.** `awq.quantize.dequantize_layer` is the canonical
-  dequantizer; `awq.inference` imports it rather than re-implementing. Verify
-  and inference therefore measure/incur the same error.
+- **Verify-only dequant.** `awq.quantize.dequantize_layer` is the canonical
+  dequantizer, used by `verify_reconstruction` to report per-layer MSE against
+  the original FP16 weights. It is NOT an inference path: running the model is
+  done via `awq export` + a real INT4 runtime, which folds `s` into the norm
+  rather than dividing weights by `s`.
 - **AWQ direction.** Quantization scales weights **up** by `s`
   (`w_scaled = W * s`) and dequantization divides by `s` (`W ≈ Q(W·s)/s`).
   This matches the reference implementation

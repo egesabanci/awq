@@ -25,7 +25,7 @@ this CLI.
 | Option | Default | Description |
 | --- | --- | --- |
 | `--model` | required | Local model directory or Hugging Face repo ID. |
-| `--device` | auto | `cuda` / `mps` / `cpu`; auto-detected if omitted. Passing `--device cuda` on a non-CUDA host falls back to MPS/CPU with a warning. |
+| `--device` | auto | `cuda` / `cpu`; auto-detected if omitted. Passing `--device cuda` on a non-CUDA host falls back to CPU with a warning. |
 | `--quiet` | off | Suppress per-layer progress output. Errors and failures are still surfaced. |
 
 ## `awq calibrate`
@@ -37,8 +37,6 @@ this CLI.
 | `--samples` | `128` | Number of calibration samples. |
 | `--batch-size` | `5` | Cache-clear cadence (see [calibration.md](calibration.md) — there is no real batching). |
 | `--max-length` | `2048` | Max sequence length per sample (truncate). |
-
-On MPS, `limit_memory(0.7, "mps")` is applied before the model loads.
 
 ## `awq scales`
 

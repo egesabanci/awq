@@ -176,5 +176,3 @@ def _empty_device_cache(device: str) -> None:
     """Empty device cache based on backend."""
     if device == "cuda":
         torch.cuda.empty_cache()
-    elif device == "mps":
-        torch.mps.empty_cache()

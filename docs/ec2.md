@@ -86,9 +86,10 @@ python -m awq quantize --model /data/models/Qwen3-1.7B \
   --group-size 32 --verify-layers 3
 ```
 
-There is no `benchmark`/eval step — quality comparison is out of scope. To
-inspect generation quality, use `awq.inference.load_awq_model` from a Python
-shell (dequantized-FP16; see [inference.md](inference.md)).
+There is no `benchmark`/eval step in the CLI. To inspect generation quality,
+`awq export` the artifact and load it in a real INT4 runtime (AutoAWQ/vLLM);
+see [inference.md](inference.md). The bundled `eval/ppl.py` measures
+perplexity + greedy generation against the FP16 baseline.
 
 ## Memory tuning
 
@@ -108,17 +109,15 @@ If you hit OOM:
 > Note: `--batch-size` controls cache-clear cadence, not real batching (each
 > sample is forwarded individually). See [calibration.md](calibration.md).
 
-### CUDA memory-limit call ordering
+### CUDA memory
 
-`utils/memory.limit_memory` is **only applied on MPS** (where
-`torch.mps.set_per_process_memory_fraction` caps the shared GPU memory). On
-**CUDA it is deliberately not applied**: `torch.cuda.set_per_process_memory_fraction`
-must run *before any CUDA allocation*, but `load_model` with `device_map="auto"`
-allocates immediately, and capping a dedicated GPU box prematurely causes OOM
-on models that genuinely need the full VRAM (e.g. a 7B/8B FP16 load is roughly
-14-16 GB on a 24 GB card). We therefore rely on **natural VRAM headroom** on
-CUDA and only `log_memory` for observability. If you share the GPU, set the
-fraction manually before importing the model.
+There is no per-process VRAM cap on CUDA — `limit_memory` (an Apple-Silicon/MPS
+helper) was removed. `load_model` with `device_map="auto"` allocates immediately
+and a dedicated GPU box should use its full VRAM; capping it prematurely causes
+OOM on models that genuinely need it (a 7B/8B FP16 load is ~14-16 GB on a 24 GB
+card). `log_memory` still reports GPU usage for observability. If you share the
+GPU, set `torch.cuda.set_per_process_memory_fraction` manually before importing
+the model.
 
 ## Large-model notes
 

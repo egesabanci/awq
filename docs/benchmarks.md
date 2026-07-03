@@ -11,14 +11,15 @@ generation (max_new_tokens 48). Artifacts produced with
 
 ## Headline results
 
-| Model | FP16 PPL | AWQ-runtime PPL | × FP16 | awq.inference PPL | bar |
+| Model | FP16 PPL | AWQ-runtime PPL | × FP16 | dequant-FP16 path (removed) | bar |
 | --- | --- | --- | --- | --- | --- |
 | Qwen3-0.6B (neg. control) | ~coherent | coherent | — | garbage | below viability |
-| **Qwen3-1.7B** | 16.79 | **20.90** | **1.245×** | 264120 (broken) | INVESTIGATE |
-| **Qwen3-8B** (7B-class) | 9.75 | **10.08** | **1.034×** | 174464 (broken) | **PASS** |
+| **Qwen3-1.7B** | 16.79 | **20.90** | **1.245×** | 264120 (broken → removed) | INVESTIGATE |
+| **Qwen3-8B** (7B-class) | 9.75 | **10.08** | **1.034×** | 174464 (broken → removed) | **PASS** |
 
-`AWQ-runtime` = `awq export` → AutoAWQ real-INT4 GEMM. `awq.inference` = the
-dequantized-FP16 path (`load_awq_model`). Pass bar: AWQ PPL ≤ 1.10× FP16.
+`AWQ-runtime` = `awq export` → AutoAWQ real-INT4 GEMM. The `dequant-FP16 path` column
+is the now-removed `awq.inference` path, kept here as the justification for its
+removal. Pass bar: AWQ PPL ≤ 1.10× FP16.
 
 **8B passes cleanly (1.034× FP16)** with coherent greedy generation across all
 four prompts. 1.7B is at the INVESTIGATE/edge (1.245×) — smaller models are
@@ -43,12 +44,13 @@ canonical verify) were re-validated on **viable** models on CUDA.
 - **The exportable AWQ works and scales with model size.** `awq export` →
   AutoAWQ real-INT4 gives **1.034× FP16 on 8B** (PASS) and 1.245× on 1.7B
   (INVESTIGATE), with coherent generation.
-- **`awq.inference` (the dequantized-FP16 path) is broken on viable models.**
-  PPL 264120 (1.7B) / 174464 (8B). Root cause below.
+- **The dequantized-FP16 path (`awq.inference`) was broken on viable models**
+  (PPL 264120 / 174464) and has been **removed**. Root cause below; `awq export`
+  + a real INT4 runtime is the replacement.
 
-### Root cause: `awq.inference` divides weights by `s`, amplifying error
+### Root cause (why the dequant-FP16 path was removed): it divided weights by `s`, amplifying error
 
-`awq.inference.load_awq_model` injects `Q(W·s)/s` as the linear weight and runs
+The removed `awq.inference.load_awq_model` injected `Q(W·s)/s` as the linear weight and ran
 a normal FP16 forward (no norm folding). For channels where the AWQ scale
 `s < 1`, the `1/s` factor **amplifies** the INT4 rounding error, inflating the
 weight norm and concentrating error on those channels. Measured on
@@ -56,7 +58,7 @@ weight norm and concentrating error on those channels. Measured on
 
 | dequant path | weight norm (orig = 72.03) | MSE vs FP16 | single-layer output rel. err. |
 | --- | --- | --- | --- |
-| `awq.inference` (`Q(W·s)/s`) | 79.38 (+10%) | 4.2e-4 | 29–46% |
+| dequant-FP16 path (`Q(W·s)/s`) | 79.38 (+10%) | 4.2e-4 | 29–46% |
 | export (`Q(W·s)`, `s` folded into norm) | 72.27 (+0.3%) | 2.1e-5 | — |
 
 A 29–46% per-layer output error compounds across 28–36 layers into garbage. The
@@ -64,10 +66,10 @@ A 29–46% per-layer output error compounds across 28–36 layers into garbage. 
 preceding norm — what `awq export` and the reference `mit-han-lab/llm-awq` do)
 avoids the `1/s` amplification and is **20× more accurate** per weight.
 
-**Recommendation.** `awq.inference` should fold `s` into the preceding norm
-(shared per norm group, as `awq export` does) instead of dividing weights by
-`s`. Until then, `awq.inference` is a sanity-check path only; the
-`awq export` → AutoAWQ/vLLM path is the correct, runtime-loadable AWQ.
+**Resolution.** The dequant-FP16 path was removed. `awq export` folds `s`
+into the preceding norm (shared per norm group) instead of dividing weights by
+`s`, which is the correct, runtime-loadable AWQ (matches the reference
+`mit-han-lab/llm-awq`).
 
 ## Grid-search vs fixed-α ablation (Qwen3-1.7B, gs=128)
 
@@ -103,8 +105,6 @@ awq export --model /data/models/Qwen3-1.7B \
   --from /data/out-1.7b/awq_quantized/quantized_state.pt \
   --to /data/out-1.7b/awq_hf --group-size 128        # add --device cuda for 8B
 python eval/ppl.py --model /data/models/Qwen3-1.7B --config fp16
-python eval/ppl.py --model /data/models/Qwen3-1.7B --config awq-dequant \
-  --quantized-state /data/out-1.7b/awq_quantized/quantized_state.pt
 python eval/ppl.py --model /data/models/Qwen3-1.7B --config awq-runtime \
   --export-dir /data/out-1.7b/awq_hf --gen
 ```

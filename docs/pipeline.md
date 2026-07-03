@@ -39,8 +39,8 @@ FP16 model  ────────────────►  calibration_sta
 - Output: `awq_quantized/quantized_state.pt` + `metadata.json`.
 
 ### 4. Verify (`awq.quantize.verify_reconstruction`)
-- Dequantize a few layers via the **same** `dequantize_layer` path inference
-  uses (so verification measures the error inference actually incurs).
+- Dequantize a few layers via the **canonical** `dequantize_layer` path
+  (so verification reports the real per-layer quantization MSE).
 - Report MSE against the original FP16 weights on disk.
 
 ## Full pipeline (`awq run`)
@@ -51,9 +51,9 @@ benchmark/evaluation phase — quality comparison is out of scope for this CLI.
 
 ## Invariants
 
-- The dequantization path is **single-source**: `awq.quantize.dequantize_layer`
-  is used by both `verify_reconstruction` and `awq.inference.load_awq_model`, so
-  verification and inference can never diverge.
+- The verification dequant (`awq.quantize.dequantize_layer`) is used only by
+  `verify_reconstruction`. Running the model is done via `awq export` + a real
+  INT4 runtime, so there is no dequant-to-FP16 inference path to diverge from.
 - Quantization never loads the full model into device memory; it reads
   `safetensors` tensor-by-tensor on CPU.
 - A scales run that produces 0 layers raises `ScaleError` (it never silently

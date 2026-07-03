@@ -260,15 +260,17 @@ def quantize_all_layers(
 
 
 def dequantize_layer(q: dict) -> torch.Tensor:
-    """Dequantize a full quantized layer back to FP16 weights.
+    """Dequantize a full quantized layer back to FP16 weights (verify-only).
 
     Inverts ``quantize_layer_cpu``: the stored INT4 encodes ``W * s`` (AWQ
     scales weights UP before quantization), so the group-dequantized tensor is
     divided by ``s`` to recover ``W ≈ Q(W * s) / s``.
 
-    This is the single canonical dequantization path, shared by both
-    ``verify_reconstruction`` and ``awq.inference.load_awq_model`` so that
-    verification measures the same error inference actually incurs.
+    Used by ``verify_reconstruction`` to measure per-layer reconstruction MSE
+    against the original FP16 weights on disk. This is NOT an inference path:
+    running a model from the quantized artifact is done via ``awq export`` to a
+    real INT4 runtime (AutoAWQ / vLLM), which folds ``s`` into the preceding
+    norm instead of dividing weights by ``s`` (see ``awq/export.py``).
 
     Args:
         q: Quantized layer dict with keys 'packed_weights', 'group_scales',
@@ -327,9 +329,8 @@ def verify_reconstruction(
         # Load original weight
         fp16_weight = load_weight_from_safetensors(sf_path, tensor_name).float()
 
-        # Dequantize using the SAME path as inference (includes AWQ 1/s).
-        # Using _dequantize_group alone (without the 1/s back-apply) would
-        # compare W against Q(W*s) and report scale magnitude, not quant error.
+        # Dequantize via the canonical path (includes AWQ 1/s) so the MSE
+        # reflects quantization error, not scale magnitude.
         deq_weight = dequantize_layer(q).float()
 
         mse = (fp16_weight - deq_weight).pow(2).mean().item()

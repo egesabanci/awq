@@ -21,7 +21,7 @@ class TestMemory:
     def test_get_device_returns_string(self):
         from utils.memory import get_device
         device = get_device()
-        assert device in ("cuda", "mps", "cpu")
+        assert device in ("cuda", "cpu")
 
     def test_get_device_name(self):
         from utils.memory import get_device_name
@@ -296,11 +296,11 @@ class TestQuantize:
             "model.layers.0.mlp.gate_proj"
 
 
-class TestInference:
-    """Tests for awq/inference.py — dequantization and model loading."""
+class TestDequant:
+    """Tests for awq.quantize.dequantize_layer — the canonical dequant (verify path)."""
 
     def test_dequantize_layer(self):
-        from awq.inference import dequantize_layer
+        from awq.quantize import dequantize_layer
         from awq.quantize import quantize_layer_cpu
 
         torch.manual_seed(42)
@@ -390,7 +390,7 @@ class TestAwqCorrectness:
         """Bug 3 / consistency: dequant must invert quant with non-identity scales.
 
         If dequantize_layer forgot the 1/s back-apply, this MSE would blow up."""
-        from awq.inference import dequantize_layer
+        from awq.quantize import dequantize_layer
         from awq.quantize import quantize_layer_cpu
 
         torch.manual_seed(3)
