@@ -47,6 +47,7 @@ Examples:
   awq calibrate --model Qwen/Qwen3-0.6B --dataset wikitext --output results/stats.pt
   awq scales     --model Qwen/Qwen3-0.6B --calibration-stats results/stats.pt
   awq quantize   --model Qwen/Qwen3-0.6B --scales results/awq_scales.pt
+  awq export     --model Qwen/Qwen3-0.6B --from results/awq_quantized/quantized_state.pt --to results/awq_hf
   awq run        --model Qwen/Qwen3-0.6B --dataset wikitext --output-dir results/
 """,
     )
@@ -109,6 +110,19 @@ Examples:
     quant.add_argument("--quiet", action="store_true",
                        help="Suppress progress output")
 
+    # ── export ───────────────────────────────────────────────────────
+    exp = subparsers.add_parser("export", help="Export quantized_state.pt to a runtime-loadable HF-AWQ INT4 model")
+    exp.add_argument("--model", required=True, help="FP16 model path or HF repo ID (for config + weights to re-quantize)")
+    exp.add_argument("--from", dest="from_path", required=True,
+                     help="Path to quantized_state.pt (from `awq quantize`)")
+    exp.add_argument("--to", dest="to_dir", default="results/awq_hf",
+                     help="Output directory for the HF-AWQ model")
+    exp.add_argument("--group-size", type=int, default=128,
+                     help="INT4 group size (must match the quantized artifact; default 128)")
+    exp.add_argument("--device", default="cpu",
+                     help="Device to load the FP16 model on for re-quantization (cpu or cuda; use cuda for large models)")
+    exp.add_argument("--quiet", action="store_true", help="Suppress progress output")
+
     # ── run ──────────────────────────────────────────────────────────
     run = subparsers.add_parser("run", help="Run full pipeline end-to-end")
     run.add_argument("--model", required=True, help="Model path or HF repo ID")
@@ -132,6 +146,8 @@ Examples:
                      help="Number of alpha candidates for grid search (default: 20)")
     run.add_argument("--quantize-strategy", default="alternating",
                      choices=["all", "alternating", "last_only", "first_only"])
+    run.add_argument("--verify-layers", type=int, default=3,
+                     help="Layers to dequantize and verify post-quantization (default: 3, 0 to skip)")
     run.add_argument("--device", default=None,
                      help="Device (auto-detected if omitted)")
     run.add_argument("--quiet", action="store_true",
@@ -247,6 +263,26 @@ def cmd_quantize(args: argparse.Namespace) -> int:
             print(f"  Average MSE: {avg_mse:.8f}")
 
     print(f"\n✅ Quantization complete. {len(quantized)} layers → {args.output_dir}")
+    return 0
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    """Execute the export subcommand: quantized_state.pt -> HF-AWQ INT4 dir."""
+    verbose = not args.quiet
+    from awq.export import export_to_awq, load_quantized_state
+    from utils.errors import require_quantized_dir
+
+    # Validate the quantized state path (must point at quantized_state.pt)
+    if not os.path.exists(args.from_path):
+        print(f"[ERROR] quantized state not found: {args.from_path}", file=sys.stderr)
+        return 1
+    quantized_state = load_quantized_state(args.from_path)
+    if not isinstance(quantized_state, dict) or len(quantized_state) == 0:
+        print("[ERROR] quantized state is empty or malformed", file=sys.stderr)
+        return 1
+
+    export_to_awq(quantized_state, args.model, args.to_dir,
+                  group_size=args.group_size, verbose=verbose, device=args.device)
     return 0
 
 
@@ -371,10 +407,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     )
 
     # Verify
-    errors = verify_reconstruction(quantized, args.model, num_layers=3, verbose=verbose)
-    if errors:
-        avg_mse = sum(errors.values()) / len(errors)
-        print(f"  Average MSE: {avg_mse:.8f}")
+    if args.verify_layers > 0:
+        errors = verify_reconstruction(quantized, args.model, num_layers=args.verify_layers, verbose=verbose)
+        if errors:
+            avg_mse = sum(errors.values()) / len(errors)
+            print(f"  Average MSE: {avg_mse:.8f}")
+    else:
+        print("  (verification skipped: --verify-layers 0)")
 
     print(f"\n  ✓ Quantized model → {quantized_dir}\n")
 
@@ -440,6 +479,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_scales(args)
         elif args.command == "quantize":
             return cmd_quantize(args)
+        elif args.command == "export":
+            return cmd_export(args)
         elif args.command == "run":
             return cmd_run(args)
         else:

@@ -12,7 +12,7 @@ authors = [
     { name = "Ege Sabanci" },
 ]
 
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
     "torch>=2.4.0",
     "transformers>=4.43.0",

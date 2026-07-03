@@ -14,6 +14,7 @@ awq <command> [options]
 | `calibrate` | Forward calibration samples; collect per-channel activation magnitudes. |
 | `scales` | Compute per-layer AWQ scales (α grid search by default). |
 | `quantize` | Pack linear weights to group-wise INT4; verify reconstruction. |
+| `export` | Convert `quantized_state.pt` to a runtime-loadable HF-AWQ INT4 model (AutoAWQ/vLLM). |
 | `run` | Execute calibrate → scales → quantize (+ verify) in one process. |
 
 There is no `benchmark`/eval command — quality comparison is out of scope for
@@ -66,6 +67,21 @@ raises `ScaleError` and exits non-zero.
 | `--verify-layers` | `3` | Layers to dequantize and compare vs disk. `0` skips. |
 
 Quantization runs on CPU, reading `safetensors` one tensor at a time.
+
+## `awq export`
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--model` | required | FP16 model path / HF repo ID (for config + weights to re-quantize). |
+| `--from` | required | Path to `quantized_state.pt` (from `awq quantize`). |
+| `--to` | `results/awq_hf` | Output directory for the HF-AWQ model. |
+| `--group-size` | `128` | INT4 group size (must match the quantized artifact). |
+
+Re-packs the custom `quantized_state.pt` into the **AutoAWQ GEMM on-disk format**
+(`qweight`/`qzeros`/`scales` int32/fp16 + `quantize_config.json`) that
+`AutoAWQForCausalLM` and vLLM's `awq` loader read directly. See
+[inference.md](inference.md) for the scale-reconciliation math and round-trip
+validation.
 
 ## `awq run`
 

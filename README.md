@@ -34,9 +34,9 @@ than hardcoding layer counts, and it reads weights one tensor at a time from
 > its reconstruction quality. Loading that artifact (via `awq.inference`)
 > dequantizes weights back to FP16 and runs a standard forward — there is no
 > INT4 kernel, so there is no speed/memory benefit at inference time on its
-> own. The artifact is what you'd hand to an INT4-aware runtime (vLLM, TGI,
-> MLX, TensorRT-LLM, …) for real INT4 execution. See
-> [docs/inference.md](docs/inference.md).
+> own. For **real INT4 execution**, run `awq export` to produce a
+> runtime-loadable AutoAWQ/HF-AWQ model and hand it to AutoAWQ or vLLM. See
+> [docs/inference.md](docs/inference.md) and [docs/cli.md](docs/cli.md).
 
 ## Highlights
 
@@ -89,6 +89,7 @@ The pipeline is intentionally linear and inspectable.
 | 2. Scales | For each linear layer, grid-search α and compute per-channel AWQ scales `s = (x_max^α) / (mean^α)`, scored by activation-weighted reconstruction of `Q(W·s)/s`. | `awq_scales.pt` |
 | 3. Quantize | Read each weight tensor from `safetensors`, scale `W·s`, pack to group-wise INT4 (two INT4 per byte), store group scales + AWQ scales. | `awq_quantized/quantized_state.pt`, `metadata.json` |
 | 4. Verify | Dequantize a few layers (same path as inference) and report MSE vs. the original weights. | printed MSE |
+| 5. Export | (optional) Re-pack `quantized_state.pt` into the AutoAWQ GEMM on-disk format a runtime loads. | `awq_hf/` (loadable by AutoAWQ / vLLM) |
 
 Run all steps with one command:
 
@@ -102,6 +103,7 @@ Or run steps individually:
 awq calibrate --model Qwen/Qwen3-0.6B --dataset wikitext --output out/stats.pt
 awq scales     --model Qwen/Qwen3-0.6B --calibration-stats out/stats.pt --output out/scales.pt
 awq quantize   --model Qwen/Qwen3-0.6B --scales out/scales.pt --output-dir out/awq
+awq export     --model Qwen/Qwen3-0.6B --from out/awq/quantized_state.pt --to out/awq_hf --group-size 128
 ```
 
 ## CLI Reference
@@ -186,8 +188,10 @@ INT4). Qwen3.5-style hybrid-attention tiny projections
 (`linear_attn.in_proj_{a,b,z}`) are also skipped by name when present; on
 standard-attention models they simply match nothing.
 
-Tested on: Qwen3-0.6B (28 layers). Larger models (7B+) require a CUDA box —
-see [docs/ec2.md](docs/ec2.md).
+Tested on: Qwen3-0.6B / 1.7B / 8B on CUDA (NVIDIA L4). `awq export` produces a
+runtime-loadable AutoAWQ/HF-AWQ model (PPL 1.034x FP16 on 8B - see
+[docs/benchmarks.md](docs/benchmarks.md)). Larger models (7B+) require a CUDA
+box - see [docs/ec2.md](docs/ec2.md).
 
 ## Technical Docs
 
@@ -206,11 +210,12 @@ inference, EC2 deployment, and development.
 awq/
   __init__.py
   __main__.py      # python -m awq
-  cli.py           # CLI dispatcher (calibrate / scales / quantize / run)
+  cli.py           # CLI dispatcher (calibrate / scales / quantize / export / run)
   models.py        # shared FP16 model loader
   calibrate.py     # on-the-fly activation statistics via hooks
   scales.py        # per-layer AWQ scale computation + α grid search
   quantize.py      # memory-safe INT4 quantizer + reconstruction verify
+  export.py        # quantized_state.pt → runtime-loadable AutoAWQ/HF-AWQ INT4
   inference.py     # dequantization + AWQ model loading
 data/
   natural_calibration.json   # bundled WikiText-2 calibration samples

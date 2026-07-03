@@ -108,6 +108,18 @@ If you hit OOM:
 > Note: `--batch-size` controls cache-clear cadence, not real batching (each
 > sample is forwarded individually). See [calibration.md](calibration.md).
 
+### CUDA memory-limit call ordering
+
+`utils/memory.limit_memory` is **only applied on MPS** (where
+`torch.mps.set_per_process_memory_fraction` caps the shared GPU memory). On
+**CUDA it is deliberately not applied**: `torch.cuda.set_per_process_memory_fraction`
+must run *before any CUDA allocation*, but `load_model` with `device_map="auto"`
+allocates immediately, and capping a dedicated GPU box prematurely causes OOM
+on models that genuinely need the full VRAM (e.g. a 7B/8B FP16 load is roughly
+14-16 GB on a 24 GB card). We therefore rely on **natural VRAM headroom** on
+CUDA and only `log_memory` for observability. If you share the GPU, set the
+fraction manually before importing the model.
+
 ## Large-model notes
 
 - Calibration loads the full FP16 model on the GPU. A 7B model ≈ 14 GB FP16.
