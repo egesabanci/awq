@@ -1,9 +1,9 @@
 """AWQ CLI — command-line interface for the quantization pipeline.
 
 Usage:
-    python -m awq --help
-    python -m awq calibrate --model /path/to/model --dataset c4 ...
-    python -m awq run --model /path/to/model --dataset c4 --output-dir ./results
+    awq --help
+    awq calibrate --model /path/to/model --dataset wikitext ...
+    awq run --model /path/to/model --dataset wikitext --output-dir ./results
 """
 
 import argparse
@@ -39,15 +39,15 @@ def _warn_if_cuda_mismatch(requested_device: str | None) -> str | None:
 def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser with all subcommands."""
     parser = argparse.ArgumentParser(
-        prog="python -m awq",
-        description="AWQ quantization experimentation pipeline",
+        prog="awq",
+        description="Model-agnostic AWQ (Activation-aware Weight Quantization) CLI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
-  python -m awq calibrate --model Qwen/Qwen3.5-2B --dataset c4 --output-dir results
-  python -m awq scales --model Qwen/Qwen3.5-2B --calibration-stats results/stats.pt
-  python -m awq quantize --model Qwen/Qwen3.5-2B --scales results/scales.pt
-  python -m awq run --model Qwen/Qwen3.5-2B --dataset c4 --output-dir results/
+  awq calibrate --model Qwen/Qwen3-0.6B --dataset wikitext --output results/stats.pt
+  awq scales     --model Qwen/Qwen3-0.6B --calibration-stats results/stats.pt
+  awq quantize   --model Qwen/Qwen3-0.6B --scales results/awq_scales.pt
+  awq run        --model Qwen/Qwen3-0.6B --dataset wikitext --output-dir results/
 """,
     )
 
@@ -57,8 +57,7 @@ Examples:
     calib = subparsers.add_parser("calibrate", help="Run calibration pass")
     calib.add_argument("--model", required=True, help="Model path or HF repo ID")
     calib.add_argument("--dataset", default="wikitext",
-                       choices=["wikitext", "c4"],
-                       help="Calibration dataset")
+                       help="Calibration dataset (wikitext; bundled WikiText-2 samples)")
     calib.add_argument("--output", default="results/calibration_stats.pt",
                        help="Output path for calibration stats")
     calib.add_argument("--samples", type=int, default=128,
@@ -85,6 +84,8 @@ Examples:
                        help="INT4 group size; must match `awq quantize` (default: 32)")
     scales.add_argument("--no-grid-search", action="store_true",
                        help="Disable per-layer alpha grid search; use --alpha instead")
+    scales.add_argument("--n-grid", type=int, default=20,
+                       help="Number of alpha candidates for grid search (default: 20, per AWQ paper)")
     scales.add_argument("--quantize-strategy", default="alternating",
                         choices=["all", "alternating", "last_only", "first_only"],
                         help="Which layers to quantize (default: alternating)")
@@ -112,8 +113,7 @@ Examples:
     run = subparsers.add_parser("run", help="Run full pipeline end-to-end")
     run.add_argument("--model", required=True, help="Model path or HF repo ID")
     run.add_argument("--dataset", default="wikitext",
-                     choices=["wikitext", "c4"],
-                     help="Calibration dataset")
+                     help="Calibration dataset (wikitext; bundled WikiText-2 samples)")
     run.add_argument("--output-dir", default="results",
                      help="Output directory for all artifacts")
     run.add_argument("--samples", type=int, default=128,
@@ -128,6 +128,8 @@ Examples:
                      help="AWQ scaling strength (used only with --no-grid-search)")
     run.add_argument("--no-grid-search", action="store_true",
                      help="Disable per-layer alpha grid search; use --alpha instead")
+    run.add_argument("--n-grid", type=int, default=20,
+                     help="Number of alpha candidates for grid search (default: 20)")
     run.add_argument("--quantize-strategy", default="alternating",
                      choices=["all", "alternating", "last_only", "first_only"])
     run.add_argument("--device", default=None,
@@ -210,6 +212,7 @@ def cmd_scales(args: argparse.Namespace) -> int:
         skip_set=skip_set,
         group_size=args.group_size,
         grid_search=not args.no_grid_search,
+        n_grid=args.n_grid,
     )
 
     print(f"\n✅ Scale computation complete. {len(scales)} layers → {args.output}")
@@ -343,6 +346,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         skip_set=skip_set,
         group_size=args.group_size,
         grid_search=not args.no_grid_search,
+        n_grid=args.n_grid,
     )
     del model
     empty_cache()
@@ -406,14 +410,8 @@ def _load_calibration_prompts(dataset: str, n_samples: int) -> list[str]:
         texts = [s["text"] for s in ds if s["text"].strip()]
         return texts[:n_samples]
 
-    elif dataset == "c4":
-        raise NotImplementedError(
-            "C4 requires streaming from HF which may be slow. "
-            "Use 'wikitext' instead."
-        )
-
     else:
-        raise ValueError(f"Unknown dataset: {dataset}")
+        raise ValueError(f"Unknown dataset: {dataset!r}. Only 'wikitext' is supported.")
 
 
 # ── Entry point ─────────────────────────────────────────────────────
@@ -456,9 +454,10 @@ def main(argv: list[str] | None = None) -> int:
         traceback.print_exc(file=sys.stderr)
 
         # Memory diagnostics on OOM
-        if "out of memory" in str(e).lower() or "mps" in str(e).lower():
+        if "out of memory" in str(e).lower() or "mps" in str(e).lower() or "cuda" in str(e).lower():
             from utils.errors import diagnose_oom
-            diagnose_oom(args.device or "mps")
+            from utils.memory import get_device as _get_device
+            diagnose_oom(args.device or _get_device())
 
         return 1
 

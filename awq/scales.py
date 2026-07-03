@@ -172,7 +172,8 @@ def build_skip_set(calibration_stats: dict[str, torch.Tensor],
         skips.add("model.model.lm_head")
 
     # Derive the actual transformer layer indices from the calibration stats
-    # instead of hardcoding 24 (the old assumption only fit Qwen3.5-2B).
+    # instead of hardcoding a fixed layer count (the old assumption only fit a
+    # single 24-layer model).
     layer_indices: set[int] = set()
     for key in calibration_stats:
         m = re.search(r"model\.layers\.(\d+)\.", key)
@@ -220,6 +221,7 @@ def compute_all_scales(
     skip_set: set[str] | None = None,
     group_size: int = 32,
     grid_search: bool = True,
+    n_grid: int = 20,
 ) -> dict[str, torch.Tensor]:
     """Compute AWQ scale factors for ALL linear layers in the model.
 
@@ -235,6 +237,8 @@ def compute_all_scales(
             search matches the quantizer's grid.
         grid_search: If True, search α per layer (proper AWQ); if False, use
             the fixed ``alpha``.
+        n_grid: Number of α candidates when ``grid_search=True`` (default 20,
+            per AWQ paper).
 
     Returns:
         dict of {layer_name: scale_factors} — [d_in] per layer.
@@ -285,6 +289,7 @@ def compute_all_scales(
                 alpha=alpha,
                 group_size=group_size,
                 grid_search=grid_search,
+                n_grid=n_grid,
             )
             scales[layer_name] = s
 

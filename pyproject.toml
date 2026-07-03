@@ -23,6 +23,9 @@ dependencies = [
     "tqdm>=4.66.0",
 ]
 
+[project.scripts]
+awq = "awq.__main__:main"
+
 [project.urls]
 Repository = "https://github.com/egesabanci/awq"
 
