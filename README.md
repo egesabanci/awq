@@ -58,7 +58,7 @@ than hardcoding layer counts, and it reads weights one tensor at a time from
 Prerequisites:
 
 - Linux with CUDA (recommended) or CPU-only
-- Python 3.11+
+- Python 3.10+
 - PyTorch 2.4+
 - A local FP16 model in `safetensors` (or a Hugging Face repo ID)
 
@@ -149,6 +149,17 @@ python -m awq --help
 | `--group-size` | `32` | INT4 group size (32–128). |
 | `--verify-layers` | `3` | Layers to verify post-quantization. `0` to skip. |
 
+### `awq export` — runtime-loadable INT4
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--model` | required | FP16 model path / HF repo ID (for config + weights to re-quantize). |
+| `--from` | required | Path to `quantized_state.pt` (from `awq quantize`). |
+| `--to` | `results/awq_hf` | Output directory for the HF-AWQ model. |
+| `--group-size` | `128` | INT4 group size (must match the quantized artifact). |
+| `--device` | `cpu` | Device to load the FP16 model on (`cuda` for large models). |
+| `--quiet` | off | Suppress progress output. |
+
 ### `awq run` — full pipeline
 
 Runs calibrate → scales → quantize (+ verify). Accepts the union of the
@@ -165,6 +176,9 @@ out/
   awq_quantized/
     quantized_state.pt    # {layer_name: packed INT4 + group scales + AWQ scales}
     metadata.json         # group size, layer count, compression ratio
+  awq_hf/                 # `awq export` output — runtime-loadable AutoAWQ/HF-AWQ
+    model*.safetensors    # qweight/qzeros/scales (int32/fp16) + folded-norm FP16
+    quantize_config.json  # {bits:4, group_size, zero_point, quant_method:awq}
 ```
 
 `metadata.json` reports the compression ratio counting packed INT4 weights
@@ -194,7 +208,7 @@ box - see [docs/ec2.md](docs/ec2.md).
 
 Maintainer-focused reference documentation is in [docs/index.md](docs/index.md):
 pipeline, architecture, CLI, calibration, AWQ scales & INT4 quantization,
-inference, EC2 deployment, and development.
+inference/export, EC2 deployment, benchmarks, and development.
 
 ## References
 
@@ -220,6 +234,9 @@ utils/
   errors.py        # exceptions, retry decorator, validation, OOM diagnostics
 tests/
   test_pipeline.py
+  test_export.py   # AutoAWQ GEMM packing round-trip + opt-in integration
+eval/
+  ppl.py           # standalone PPL + generation measurement (not a CLI command)
 docs/
   index.md         # documentation map
 ```

@@ -22,7 +22,7 @@ executes. `awq --help` is instant and side-effect-free.
 | [CLI](cli.md) | Command-line reference with examples and failure behavior. |
 | [Calibration](calibration.md) | Activation statistics collection, hooks, memory efficiency. |
 | [Quantization](quantization.md) | AWQ scale search, skip strategies, INT4 packing, reconstruction. |
-| [Inference](inference.md) | Dequantization, weight injection, and exporting to a runtime-loadable INT4 model. |
+| [Inference](inference.md) | Exporting to a runtime-loadable AutoAWQ/HF-AWQ INT4 model and loading it in a real INT4 runtime. |
 | [EC2 Deployment](ec2.md) | Installation and usage on AWS EC2 with CUDA GPUs. |
 | [Benchmarks](benchmarks.md) | AWQ vs FP16 perplexity + generation results on Qwen3-1.7B/8B. |
 | [Development](development.md) | Test commands, import-safety checks, and extension workflow. |

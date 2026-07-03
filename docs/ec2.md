@@ -9,7 +9,7 @@ runtime for real INT4 execution.
 
 - AWS EC2 instance with an NVIDIA GPU (A10G, L4, A100)
 - Ubuntu 22.04+ AMI (Deep Learning AMI recommended)
-- Python 3.11+
+- Python 3.10+
 - CUDA 12.x + cuDNN
 
 ## Instance recommendations
@@ -24,12 +24,12 @@ runtime for real INT4 execution.
 ## Installation
 
 ```bash
-sudo apt update && sudo apt install -y python3.11 python3.11-venv git
+sudo apt update && sudo apt install -y python3.10 python3.10-venv git
 
 git clone git@github.com:egesabanci/awq.git
 cd awq
 
-python3.11 -m venv .venv
+python3.10 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
 pip install -e ".[dev]"

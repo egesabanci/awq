@@ -74,6 +74,8 @@ Quantization runs on CPU, reading `safetensors` one tensor at a time.
 | `--from` | required | Path to `quantized_state.pt` (from `awq quantize`). |
 | `--to` | `results/awq_hf` | Output directory for the HF-AWQ model. |
 | `--group-size` | `128` | INT4 group size (must match the quantized artifact). |
+| `--device` | `cpu` | Device to load the FP16 model on (`cuda` for large models that exceed CPU RAM). |
+| `--quiet` | off | Suppress progress output. |
 
 Re-packs the custom `quantized_state.pt` into the **AutoAWQ GEMM on-disk format**
 (`qweight`/`qzeros`/`scales` int32/fp16 + `quantize_config.json`) that

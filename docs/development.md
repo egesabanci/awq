@@ -14,8 +14,8 @@ python -m pytest -q tests/
 
 Tests are CPU-only, load no real models, and run in a few seconds. They cover
 memory helpers, error utilities, calibration hooks, AWQ scale math (including
-the grid-search and direction regression tests), quantize/dequant round-trip,
-and the model-agnostic skip-set logic.
+the grid-search and direction regression tests), quantize/dequant round-trip, the AutoAWQ GEMM packing round-trip
+(test_export.py), and the model-agnostic skip-set logic.
 
 ## Import-safety check
 
@@ -46,9 +46,9 @@ ruff check .
   skip-set regex won't match — calibrate/scales/quantize still run (they key
   by exact `named_modules()` names), only the depth-dependent strategies fall
   back to `all`.
-- **Real INT4 inference:** out of scope for this CLI. The quantized artifact
-  (`quantized_state.pt` + `metadata.json`) is the handoff point to an
-  INT4-aware runtime.
+- **Real INT4 inference:** handled by `awq export`, which re-packs
+  `quantized_state.pt` into a runtime-loadable AutoAWQ/HF-AWQ model (load it in
+  AutoAWQ or vLLM). See [inference.md](inference.md).
 
 ## Releasing
 
