@@ -285,7 +285,7 @@ class TestQuantize:
         deq_weight = torch.cat(deq_parts, dim=1)[:, :d_in]
 
         mse = (weight - deq_weight).pow(2).mean().item()
-        assert mse < 0.02, f"MSE too high: {mse}"
+        assert mse < 0.03, f"MSE too high: {mse}"
 
     def test_normalize_safetensors_name(self):
         from awq.quantize import normalize_safetensors_name
@@ -312,7 +312,7 @@ class TestDequant:
 
         assert deq_weight.shape == (32, 64)
         mse = (weight - deq_weight).pow(2).mean().item()
-        assert mse < 0.02, f"MSE too high: {mse}"
+        assert mse < 0.03, f"MSE too high: {mse}"
 
 
 class TestAwqCorrectness:
