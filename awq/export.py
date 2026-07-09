@@ -203,9 +203,9 @@ def export_to_awq(
 
     ``device`` controls where the FP16 model is loaded for re-quantization:
     ``cpu`` (small models) or ``cuda`` (large models that exceed CPU RAM).
-    The export state dict is built incrementally — only int4 linears + FP16
-    non-linears (embeddings/norms/lm_head) — so peak RAM is ~the on-disk
-    footprint, not a full FP16 copy.
+    The export state dict is built incrementally — extracting FP16 weights, copying
+    the full state dict, then deleting the model before re-quantizing — so peak
+    RAM is ~2x the on-disk footprint for a brief window, then ~1x.
 
     Returns the output directory path.
     """
@@ -228,6 +228,7 @@ def export_to_awq(
         trust_remote_code=False,
     )
     n_layers = model.config.num_hidden_layers
+    cfg_dict = model.config.to_dict()
 
     # Resolve which linears are actually present in this architecture.
     present_projs = set()
@@ -240,39 +241,60 @@ def export_to_awq(
     if verbose:
         print(f"  linears present: {sorted(present_projs)}")
 
-    # Build the export state dict incrementally: quantized linears are added
-    # as qweight/qzeros/scales during the per-layer loop; non-quantized params
-    # (embeddings, folded norms, lm_head) are copied afterwards. This avoids
-    # holding a full FP16 copy in CPU RAM.
+    # --- Extract all FP16 linear/norm weights before model deletion ---
+    # This keeps the peak-RAM window (model + export_sd alive) limited to just
+    # the extraction phase, rather than persisting through the per-layer loop.
+    linear_fp16: dict[str, torch.Tensor] = {}
+    linear_biases: dict[str, torch.Tensor | None] = {}
+    norm_fp16: dict[str, torch.Tensor] = {}
+    for name, mod in model.named_modules():
+        if isinstance(mod, torch.nn.Linear):
+            linear_fp16[name] = mod.weight.data.cpu().clone()
+            linear_biases[name] = mod.bias.data.cpu().clone() if mod.bias is not None else None
+        elif mod.weight is not None and not isinstance(mod, torch.nn.Linear):
+            norm_fp16[name] = mod.weight.data.cpu().clone()
+
+    # --- Copy ALL params to export_sd, then delete the FP16 model ---
     export_sd: dict[str, torch.Tensor] = {}
-    module_by_name = {n: m for n, m in model.named_modules()}
+    for name, mod in model.named_modules():
+        for pname, param in mod.named_parameters(recurse=False):
+            full = f"{name}.{pname}" if name else pname
+            export_sd[full] = param.detach().cpu().clone()
+
+    del model, param
+    import gc
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     quantized_linear_names: set[str] = set()
     proj_count = 0
-
     for i in range(n_layers):
         layer_s = _layer_scales(quantized_state, i)
 
-        # --- shared s per norm group + fold 1/s into the norm (in place) ---
+        # --- shared s per norm group + fold 1/s into the norm ---
         for norm_name, projs in NORM_GROUPS.items():
-            norm_mod = module_by_name.get(f"model.layers.{i}.{norm_name}")
+            norm_mod_name = f"model.layers.{i}.{norm_name}"
+            norm_weight = norm_fp16.get(norm_mod_name)
             member_s = [layer_s[p] for p in projs if p in layer_s]
-            if not member_s or norm_mod is None or norm_mod.weight is None:
+            if not member_s or norm_weight is None:
                 continue
-            s_shared = _geomean(member_s).to(torch.float16).to(norm_mod.weight.device)
-            with torch.no_grad():
-                norm_mod.weight.data = (norm_mod.weight.data.to(torch.float32) / s_shared).to(torch.float16)
+            s_shared = _geomean(member_s).to(torch.float16)
+            # Fold 1/s into norm (write directly into export_sd)
+            export_sd[f"{norm_mod_name}.weight"] = (
+                norm_weight.to(torch.float32) / s_shared.cpu()
+            ).to(torch.float16)
 
             for proj in projs:
                 if proj not in present_projs:
                     continue
                 linear_name = f"model.layers.{i}.{proj}"
-                mod = module_by_name.get(linear_name)
-                if mod is None or not isinstance(mod, torch.nn.Linear):
+                w = linear_fp16.get(linear_name)
+                if w is None:
                     continue
-                w = mod.weight.data.to(torch.float32).cpu()
-                signed, gscales = _sym_quantize(w, s_shared.cpu(), group_size)
+                signed, gscales = _sym_quantize(w.to(torch.float32), s_shared.cpu(), group_size)
                 packed = _export_linear_from_signed(signed, gscales, group_size)
-                _inject_linear(export_sd, linear_name, packed, mod)
+                _inject_linear(export_sd, linear_name, packed, bias=linear_biases.get(linear_name))
                 quantized_linear_names.add(linear_name)
                 proj_count += 1
                 if verbose:
@@ -283,31 +305,18 @@ def export_to_awq(
             if proj not in present_projs or proj not in layer_s:
                 continue
             linear_name = f"model.layers.{i}.{proj}"
-            mod = module_by_name.get(linear_name)
-            if mod is None or not isinstance(mod, torch.nn.Linear):
+            w = linear_fp16.get(linear_name)
+            if w is None:
                 continue
-            w = mod.weight.data.to(torch.float32).cpu()
-            signed, gscales = _sym_quantize(w, torch.ones(w.shape[1]), group_size)
+            signed, gscales = _sym_quantize(w.to(torch.float32), torch.ones(w.shape[1]), group_size)
             packed = _export_linear_from_signed(signed, gscales, group_size)
-            _inject_linear(export_sd, linear_name, packed, mod)
+            _inject_linear(export_sd, linear_name, packed, bias=linear_biases.get(linear_name))
             quantized_linear_names.add(linear_name)
             proj_count += 1
             if verbose:
                 print(f"  [RTN ] {linear_name:<45}")
-
     if verbose:
         print(f"\n  Exported {proj_count} quantized linears across {n_layers} layers.")
-
-    # Copy every NON-quantized parameter (embeddings, folded norms, lm_head, ...)
-    # as FP16. Quantized linears were already added as qweight/qzeros/scales.
-    for name, mod in model.named_modules():
-        if name in quantized_linear_names:
-            continue
-        for pname, param in mod.named_parameters(recurse=False):
-            full = f"{name}.{pname}" if name else pname
-            export_sd[full] = param.detach().cpu().clone()
-    cfg_dict = model.config.to_dict()
-    del model
 
     # 2. Write sharded safetensors + index.
     shard_bytes = 4 * 1024 ** 3  # 4 GB shards
@@ -346,15 +355,15 @@ def export_to_awq(
 
 
 def _inject_linear(sd: dict[str, torch.Tensor], linear_name: str,
-                   packed: dict[str, torch.Tensor], mod: torch.nn.Linear) -> None:
+                   packed: dict[str, torch.Tensor],
+                   bias: torch.Tensor | None = None) -> None:
     """Replace a linear's ``.weight`` (and bias) with AutoAWQ packed tensors."""
     sd.pop(f"{linear_name}.weight", None)
     sd[f"{linear_name}.qweight"] = packed["qweight"].contiguous()
     sd[f"{linear_name}.qzeros"] = packed["qzeros"].contiguous()
     sd[f"{linear_name}.scales"] = packed["scales"].contiguous()
-    if mod.bias is not None:
-        sd[f"{linear_name}.bias"] = mod.bias.data.cpu().clone()
-
+    if bias is not None:
+        sd[f"{linear_name}.bias"] = bias
 
 def _save_sharded(sd: dict[str, torch.Tensor], out_dir: str,
                   shard_bytes: int, verbose: bool) -> None:
@@ -371,6 +380,8 @@ def _save_sharded(sd: dict[str, torch.Tensor], out_dir: str,
     weight_map: dict[str, str] = {}
     for k, v in sd.items():
         sz = sizes[k]
+        if sz > shard_bytes:
+            print(f"[WARN] Tensor {k!r} is {sz/1e9:.1f} GB, exceeds shard limit of {shard_bytes/1e9:.0f} GB")
         if cur and cur_bytes + sz > shard_bytes:
             shards.append(cur)
             cur, cur_bytes = {}, 0
@@ -401,4 +412,17 @@ def _save_sharded(sd: dict[str, torch.Tensor], out_dir: str,
 
 def load_quantized_state(path: str) -> dict[str, dict]:
     """Load a ``quantized_state.pt`` produced by ``awq quantize``."""
-    return torch.load(path, map_location="cpu", weights_only=True)
+    from utils.errors import ValidationError
+    state = torch.load(path, map_location="cpu", weights_only=True)
+    if not isinstance(state, dict) or len(state) == 0:
+        raise ValidationError("quantized_state is empty or malformed")
+    required_keys = ("packed_weights", "group_scales", "scale_factors", "shape", "group_size")
+    for name, q in state.items():
+        if not isinstance(q, dict):
+            raise ValidationError(f"Layer {name!r}: expected dict, got {type(q).__name__}")
+        for k in required_keys:
+            if k not in q:
+                raise ValidationError(f"Layer {name!r}: missing required key {k!r}")
+        if not isinstance(q["shape"], (list, tuple)) or len(q["shape"]) != 2:
+            raise ValidationError(f"Layer {name!r}: 'shape' must be [d_out, d_in]")
+    return state

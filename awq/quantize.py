@@ -17,7 +17,6 @@ import json
 import os
 from typing import Any
 
-import numpy as np
 import torch
 
 from utils.memory import log_memory, get_device
@@ -34,14 +33,7 @@ def find_safetensors_files(model_path: str) -> list[str]:
     return files
 
 
-def load_index_file(model_path: str) -> dict:
-    """Load the safetensors index JSON to map tensor names to filenames."""
-    index_path = os.path.join(model_path, "model.safetensors.index.json")
-    if os.path.exists(index_path):
-        with open(index_path) as f:
-            index_data = json.load(f)
-        return index_data.get("weight_map", {})
-    return {}
+
 
 
 def iter_weights(model_path: str):
@@ -53,7 +45,6 @@ def iter_weights(model_path: str):
     import safetensors
 
     safetensors_files = find_safetensors_files(model_path)
-    weight_map = load_index_file(model_path)
 
     for sf_path in safetensors_files:
         with safetensors.safe_open(sf_path, framework="pt") as f:
@@ -84,10 +75,10 @@ def normalize_safetensors_name(name: str) -> str:
     Example: model.language_model.layers.0.mlp.gate_proj.weight
           → model.layers.0.mlp.gate_proj
     """
-    key = name.replace(".weight", "")
-    key = key.replace("model.language_model.", "model.")
-    # Also handle model.model.* pattern
-    key = key.replace("model.model.", "model.")
+    import re
+    key = name[:-len(".weight")] if name.endswith(".weight") else name
+    # Collapse model.language_model / model.model / model prefixes to model.
+    key = re.sub(r'^(?:model\.language_model\.|model\.model\.|model\.)', 'model.', key)
     return key
 
 
@@ -128,20 +119,19 @@ def quantize_layer_cpu(
             pad_size = group_size - w_group.size(1)
             w_group = torch.nn.functional.pad(w_group, (0, pad_size))
 
-        # INT4 quantize
-        group_max = w_group.abs().max()
-        if group_max < 1e-10:
-            group_max = 1e-10
-        qscale = group_max / 7.0
+        # INT4 quantize — per-row-per-group scales (matches _sym_quantize in export.py)
+        group_max = w_group.abs().amax(dim=1, keepdim=True)  # [d_out, 1]
+        group_max = group_max.clamp(min=1e-10)
+        qscale = group_max / 7.0  # [d_out, 1]
 
         w_int4 = (w_group / qscale).round().clamp(-7, 7).to(torch.int8)
 
         # Pack two INT4 into one INT8
-        w_paired = w_int4.view(d_out, group_size // 2, 2)
+        w_paired = w_int4.contiguous().view(d_out, group_size // 2, 2)
         packed = (w_paired[:, :, 0] & 0x0F) | ((w_paired[:, :, 1] & 0x0F) << 4)
 
         packed_groups.append(packed.to(torch.uint8))
-        group_scales.append(qscale.to(dtype=torch.float16))
+        group_scales.append(qscale.to(dtype=torch.float16))  # [d_out, 1] per group
 
     return {
         "packed_weights": packed_groups,
@@ -243,7 +233,7 @@ def quantize_all_layers(
             "model": os.path.basename(model_path.rstrip("/")),
             "method": "AWQ + INT4 group-wise",
             "group_size": group_size,
-            "alpha": 0.5,
+            "alpha": "grid_search (default)" if True else 0.5,  # TODO: plumb actual no_grid_search flag from CLI
             "layers_quantized": len(quantized_state),
             "fp16_mb": round(total_fp16_bytes / 1e6, 1),
             "int4_mb": round(total_quantized_bytes / 1e6, 1),
@@ -284,15 +274,7 @@ def dequantize_layer(q: dict) -> torch.Tensor:
 
     parts = []
     for packed, qscale in zip(q["packed_weights"], q["group_scales"]):
-        # Unpack two INT4 per INT8 (two's-complement low nibble convention)
-        low = (packed & 0x0F).to(torch.int8)
-        high = ((packed >> 4) & 0x0F).to(torch.int8)
-        low = torch.where(low > 7, low - 16, low)
-        high = torch.where(high > 7, high - 16, high)
-
-        w_deq = torch.stack([low, high], dim=-1).reshape(d_out, group_size)
-        w_deq = w_deq.to(dtype=torch.float16) * qscale.to(dtype=torch.float16)
-        parts.append(w_deq)
+        parts.append(_dequantize_group(packed, qscale, d_out, group_size))
 
     w = torch.cat(parts, dim=1)[:, :d_in]
 

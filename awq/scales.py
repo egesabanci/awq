@@ -128,6 +128,7 @@ def _pseudo_quantize_int4(w: torch.Tensor, group_size: int = 32) -> torch.Tensor
     return deq.view(d_out, -1)[:, :d_in].contiguous()
 
 
+@torch.inference_mode()
 def _recon_error(
     weight: torch.Tensor,
     s: torch.Tensor,
@@ -186,7 +187,7 @@ def build_skip_set(calibration_stats: dict[str, torch.Tensor],
         # only exist in Qwen3.5-style models; on standard attention models they
         # simply match nothing, so this is harmless. Layer count is derived
         # from stats (falls back to 24 when stats are empty).
-        upper = max(24, n_layers)
+        upper = max(n_layers, min(128, n_layers or 128))
         for i in range(upper):
             for proj in ("in_proj_a", "in_proj_b", "in_proj_z"):
                 skips.add(f"model.layers.{i}.linear_attn.{proj}")

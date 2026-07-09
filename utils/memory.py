@@ -11,6 +11,7 @@ import subprocess
 from collections.abc import Callable
 from contextlib import contextmanager
 from typing import Any
+import sys
 
 import torch
 
@@ -96,7 +97,7 @@ def log_memory(tag: str = "", device: str | None = None) -> None:
     if sys_mem and "free_gb" in sys_mem:
         parts.append(f"RAM free: {sys_mem['free_gb']:.1f} GB")
 
-    print(" | ".join(parts), flush=True)
+    print(" | ".join(parts), file=sys.stderr, flush=True)
 
 
 @contextmanager

@@ -12,7 +12,6 @@ import os
 from typing import Any
 
 import torch
-from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from utils.memory import memory_tracker, get_device
@@ -115,38 +114,38 @@ def run_calibration(
               f"(batch_size={batch_size}, max_length={max_length}, device={device})...")
 
     # Process in batches to keep memory bounded
-    with torch.no_grad():
-        for batch_start in range(0, n_prompts, batch_size):
-            batch = calibration_prompts[batch_start:batch_start + batch_size]
-            batch_end = min(batch_start + batch_size, n_prompts)
+    try:
+        with torch.no_grad():
+            for batch_start in range(0, n_prompts, batch_size):
+                batch = calibration_prompts[batch_start:batch_start + batch_size]
+                batch_end = min(batch_start + batch_size, n_prompts)
 
-            if verbose:
-                print(f"  Batch [{batch_start + 1}-{batch_end}/{n_prompts}]...", end=" ", flush=True)
+                if verbose:
+                    print(f"  Batch [{batch_start + 1}-{batch_end}/{n_prompts}]...", end=" ", flush=True)
 
-            for prompt in batch:
-                inputs = tokenizer(
-                    prompt,
-                    return_tensors="pt",
-                    truncation=True,
-                    max_length=max_length,
-                ).to(device)
+                for prompt in batch:
+                    inputs = tokenizer(
+                        prompt,
+                        return_tensors="pt",
+                        truncation=True,
+                        max_length=max_length,
+                    ).to(device)
 
-                # Forward — hooks aggregate channel importance
-                model(**inputs)
+                    # Forward — hooks aggregate channel importance
+                    model(**inputs)
 
-                # Immediately free per-prompt memory
-                del inputs
+                    # Immediately free per-prompt memory
+                    del inputs
 
-            if verbose:
-                print("clearing cache...", flush=True)
+                if verbose:
+                    print("clearing cache...", flush=True)
 
-            # Aggressive cleanup between batches
-            gc.collect()
-            _empty_device_cache(device)
-
-    # Cleanup hooks
-    for hook in hooks:
-        hook.remove()
+                # Aggressive cleanup between batches
+                gc.collect()
+                _empty_device_cache(device)
+    finally:
+        for hook in hooks:
+            hook.remove()
 
     # Average the running sums
     calibration_stats: dict[str, torch.Tensor] = {}
